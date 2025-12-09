@@ -37,7 +37,20 @@ The MCP servers in this demo highlight how each tool can light up widgets by com
 - `pizzaz_server_node/` – MCP server implemented with the official TypeScript SDK.
 - `pizzaz_server_python/` – Python MCP server that returns the Pizzaz widgets.
 - `solar-system_server_python/` – Python MCP server for the 3D solar system widget.
+- `kitchen_sink_server_node/` – Node MCP server for the kitchen-sink-lite widget.
+- `kitchen_sink_server_python/` – Python MCP server for the kitchen-sink-lite widget.
 - `build-all.mts` – Vite build orchestrator that produces hashed bundles for every widget entrypoint.
+
+### Kitchen sink lite overview
+
+The kitchen sink lite sample shows the full `window.openai` surface working together:
+
+- Reads host state (`toolInput`, `toolOutput`, `displayMode`, `theme`, `widgetState`).
+- Writes host state with `setWidgetState`.
+- Calls another MCP tool from the widget with `callTool`.
+- Uses host helpers like `requestDisplayMode`, `openExternal`, and `sendFollowUpMessage`.
+
+Use it as a reference for how to wire UI to MCP tool responses and host APIs with the Apps SDK UI components.
 
 ## Prerequisites
 
@@ -91,6 +104,8 @@ The repository ships several demo MCP servers that highlight different widget bu
 
 - **Pizzaz (Node & Python)** – pizza-inspired collection of tools and components
 - **Solar system (Python)** – 3D solar system viewer
+- **Kitchen sink lite (Node & Python)** – minimal widget + server pairing that demonstrates tool output, widget state, `callTool`, and host helpers
+- **Shopping cart (Python)** – simple shopping cart widget that demonstrates how to use `widgetSessionId` to keep state between tool calls
 
 ### Pizzaz Node server
 
@@ -117,6 +132,21 @@ pip install -r solar-system_server_python/requirements.txt
 uvicorn solar-system_server_python.main:app --port 8000
 ```
 
+### Kitchen sink lite Node server
+
+```bash
+pnpm --filter kitchen-sink-mcp-node start
+```
+
+### Kitchen sink lite Python server
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r kitchen_sink_server_python/requirements.txt
+uvicorn kitchen_sink_server_python.main:app --port 8000
+```
+
 ### Shopping cart Python server
 
 Use this example to learn how `_meta["widgetSessionId"]` can carry `widgetState` between tool calls so the model and widget share the same shopping cart. The widget merges tool responses with prior `widgetState`, and UI actions (like incrementing quantities) feed back into that shared state so the assistant always sees the latest cart.
@@ -129,7 +159,7 @@ uvicorn shopping_cart_python.main:app --port 8000
 ```
 
 > [!NOTE]  
-> In production you should persist the cart server-side (see `shopping_cart_python/README.md`), but this demo shows the mechanics of threading keeping state through `widgetSessionId`.
+> In production you should persist the cart server-side (see `shopping_cart_python/README.md`), but this demo shows the mechanics of keeping state through `widgetSessionId`.
 
 ---
 

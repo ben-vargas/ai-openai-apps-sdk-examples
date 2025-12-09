@@ -32,6 +32,8 @@ type API = {
 
   // Layout controls
   requestDisplayMode: RequestDisplayMode;
+  requestModal: (args: { title?: string; params?: UnknownObject }) => Promise<unknown>;
+  requestClose: () => Promise<void>;
 };
 
 export type UnknownObject = Record<string, unknown>;
