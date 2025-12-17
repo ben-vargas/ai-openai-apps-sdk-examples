@@ -7,6 +7,7 @@ import { useMaxHeight } from "../use-max-height";
 import { useOpenAiGlobal } from "../use-openai-global";
 import FullscreenViewer from "./FullscreenViewer";
 import AlbumCard from "./AlbumCard";
+import { Button } from "@openai/apps-sdk-ui/components/Button";
 
 function AlbumsCarousel({ onSelect }) {
   const albums = albumsData?.albums || [];
