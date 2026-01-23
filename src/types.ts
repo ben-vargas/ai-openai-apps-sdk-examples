@@ -21,6 +21,7 @@ export type OpenAiGlobals<
   toolResponseMetadata: ToolResponseMetadata | null;
   widgetState: WidgetState | null;
   setWidgetState: (state: WidgetState) => Promise<void>;
+  view?: OpenAiView;
 };
 
 // currently copied from types.ts in chatgpt/web-sandbox.
@@ -37,6 +38,11 @@ type API = {
 };
 
 export type UnknownObject = Record<string, unknown>;
+
+export interface OpenAiView {
+  mode?: string;
+  params?: UnknownObject;
+}
 
 export type Theme = "light" | "dark";
 

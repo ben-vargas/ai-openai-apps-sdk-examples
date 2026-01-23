@@ -335,7 +335,7 @@ export default function KitchenSinkLite() {
         <Badge variant="soft" color="info" pill className="uppercase tracking-wide">
           Calls window.openai.*()
         </Badge>
-        <Badge variant="soft" color="primary" pill className="uppercase tracking-wide">
+        <Badge variant="soft" color="discovery" pill className="uppercase tracking-wide">
           From MCP tool (structuredContent)
         </Badge>
       </div>
@@ -359,8 +359,6 @@ export default function KitchenSinkLite() {
             <CodeBlock
               className="ks-code-block ks-code-block--compact"
               language="json"
-              showLineNumbers={false}
-              wrapLongLines
             >
               {JSON.stringify(toolInput ?? {}, null, 2)}
             </CodeBlock>
@@ -394,7 +392,7 @@ export default function KitchenSinkLite() {
               ) : null}
               <div className="flex flex-wrap gap-2">
                 {widgetState?.highlight ? (
-                  <Badge variant="solid" color="primary" pill>
+                <Badge variant="solid" color="discovery" pill>
                     Highlight on
                   </Badge>
                 ) : null}
@@ -420,8 +418,6 @@ export default function KitchenSinkLite() {
             <CodeBlock
               className="ks-code-block ks-code-block--compact"
               language="json"
-              showLineNumbers={false}
-              wrapLongLines
             >
               {JSON.stringify(toolResponseMetadata ?? {}, null, 2)}
             </CodeBlock>
@@ -434,8 +430,6 @@ export default function KitchenSinkLite() {
             <CodeBlock
               className="ks-code-block ks-code-block--compact"
               language="json"
-              showLineNumbers={false}
-              wrapLongLines
             >
               {JSON.stringify(userAgent ?? {}, null, 2)}
             </CodeBlock>
@@ -506,8 +500,6 @@ export default function KitchenSinkLite() {
               <CodeBlock
                 className="ks-code-block ks-code-block--compact"
                 language="json"
-                showLineNumbers={false}
-                wrapLongLines
               >
                 {JSON.stringify(widgetState ?? {}, null, 2)}
               </CodeBlock>
@@ -548,8 +540,6 @@ export default function KitchenSinkLite() {
               <CodeBlock
                 className="ks-code-block ks-code-block--compact"
                 language="javascript"
-                showLineNumbers={false}
-                wrapLongLines
               >{`window.openai.callTool("kitchen-sink-refresh", {\n  message: "${refreshText}"\n})`}</CodeBlock>
             </div>
             <Button color="primary" onClick={handleCallTool} disabled={isCalling} className="w-fit">
@@ -563,8 +553,6 @@ export default function KitchenSinkLite() {
                 <CodeBlock
                   className="ks-code-block"
                   language="json"
-                  showLineNumbers={false}
-                  wrapLongLines
                 >
                   {callResult}
                 </CodeBlock>
@@ -603,8 +591,6 @@ export default function KitchenSinkLite() {
               <CodeBlock
                 className="ks-code-block"
                 language="json"
-                showLineNumbers={false}
-                wrapLongLines
               >
                 {anyToolResult}
               </CodeBlock>
@@ -703,8 +689,6 @@ export default function KitchenSinkLite() {
             <CodeBlock
               className="ks-code-block ks-code-block--compact"
               language="json"
-              showLineNumbers={false}
-              wrapLongLines
             >
               {JSON.stringify(toolInput ?? {}, null, 2)}
             </CodeBlock>
@@ -716,8 +700,6 @@ export default function KitchenSinkLite() {
             <CodeBlock
               className="ks-code-block ks-code-block--compact"
               language="json"
-              showLineNumbers={false}
-              wrapLongLines
             >
               {JSON.stringify(widgetState ?? {}, null, 2)}
             </CodeBlock>
@@ -744,8 +726,6 @@ export default function KitchenSinkLite() {
             <CodeBlock
               className="ks-code-block ks-code-block--compact"
               language="json"
-              showLineNumbers={false}
-              wrapLongLines
             >
               {modalResult}
             </CodeBlock>
@@ -796,8 +776,6 @@ export default function KitchenSinkLite() {
           <CodeBlock
             className="ks-code-block ks-code-block--compact"
             language="json"
-            showLineNumbers={false}
-            wrapLongLines
           >
             {fetchResult}
           </CodeBlock>

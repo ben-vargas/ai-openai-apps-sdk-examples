@@ -1,4 +1,5 @@
 import { build, type InlineConfig, type Plugin } from "vite";
+import dotenv from "dotenv";
 import react from "@vitejs/plugin-react";
 import fg from "fast-glob";
 import path from "path";
@@ -6,6 +7,8 @@ import fs from "fs";
 import crypto from "crypto";
 import pkg from "./package.json" with { type: "json" };
 import tailwindcss from "@tailwindcss/vite";
+
+dotenv.config({ path: path.resolve(process.cwd(), ".env.local") });
 
 const entries = fg.sync("src/**/index.{tsx,jsx}");
 const outDir = "assets";
@@ -17,6 +20,7 @@ const GLOBAL_CSS_LIST = [path.resolve("src/index.css")];
 const targets: string[] = [
   "todo",
   "solar-system",
+  "cards-against-ai",
   "pizzaz",
   "pizzaz-carousel",
   "pizzaz-list",
@@ -168,10 +172,30 @@ console.groupEnd();
 console.log("new hash: ", h);
 
 const defaultBaseUrl = "http://localhost:4444";
-const baseUrlCandidate = process.env.BASE_URL?.trim() ?? "";
+const baseUrlCandidate = (
+  process.env.VITE_BASE_URL ??
+  process.env.BASE_URL ??
+  ""
+).trim();
 const baseUrlRaw = baseUrlCandidate.length > 0 ? baseUrlCandidate : defaultBaseUrl;
 const normalizedBaseUrl = baseUrlRaw.replace(/\/+$/, "") || defaultBaseUrl;
 console.log(`Using BASE_URL ${normalizedBaseUrl} for generated HTML`);
+
+const defaultApiBaseUrl = "http://localhost:8000";
+const apiBaseUrlCandidate = (
+  process.env.VITE_API_BASE_URL ??
+  process.env.API_BASE_URL ??
+  ""
+).trim();
+const apiBaseUrlRaw =
+  apiBaseUrlCandidate.length > 0 ? apiBaseUrlCandidate : defaultApiBaseUrl;
+const normalizedApiBaseUrl =
+  apiBaseUrlRaw.replace(/\/+$/, "") || defaultApiBaseUrl;
+const appUrlConfigJson = JSON.stringify({
+  apiBaseUrl: normalizedApiBaseUrl,
+  assetsBaseUrl: normalizedBaseUrl,
+});
+console.log(`Using API_BASE_URL ${normalizedApiBaseUrl} for generated HTML`);
 
 for (const name of builtNames) {
   const dir = outDir;
@@ -180,6 +204,9 @@ for (const name of builtNames) {
   const html = `<!doctype html>
 <html>
 <head>
+  <script>
+    window.__APP_URL_CONFIG__ = ${appUrlConfigJson};
+  </script>
   <script type="module" src="${normalizedBaseUrl}/${name}-${h}.js"></script>
   <link rel="stylesheet" href="${normalizedBaseUrl}/${name}-${h}.css">
 </head>

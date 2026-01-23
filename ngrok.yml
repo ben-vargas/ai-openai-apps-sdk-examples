@@ -1,0 +1,10 @@
+version: "3"
+tunnels:
+  resources:
+    proto: http
+    addr: 4444
+    domain: benlesh.ngrok.dev
+  api:
+    proto: http
+    addr: 8000
+    domain: benlesh.ngrok.app

@@ -72,7 +72,6 @@ function multiEntryDevEndpoints(options: {
 <html>
 <head>
   <script type="module" src="/${name}.js"></script>
-  <link rel="stylesheet" href="/${name}.css">
   </head>
 <body>
   <div id="${name}-root"></div>
