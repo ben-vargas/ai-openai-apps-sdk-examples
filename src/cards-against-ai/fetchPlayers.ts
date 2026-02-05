@@ -1,9 +1,5 @@
 import { Persona, Player } from "./types";
 
-export async function* fetchPlayers(): AsyncGenerator<Player> {
-    throw new Error("Not implemented");
-}
-
 interface PersonaTemplate {
     name: string;
     personality: string;
@@ -93,17 +89,4 @@ export function createFakePlayers(): Player[] {
     }
 
     return players;
-}
-
-const FAKE_PLAYERS: Player[] = createFakePlayers();
-
-export async function* fetchFakePlayers(): AsyncGenerator<Player> {
-    const fetchedPlayers: Player[] = [];
-
-    while (fetchedPlayers.length < 4) {
-        await new Promise(resolve => setTimeout(resolve, 200));
-        const player = FAKE_PLAYERS[fetchedPlayers.length];
-        fetchedPlayers.push(player);
-        yield player;
-    }
 }

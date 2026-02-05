@@ -1,10 +1,10 @@
 export type {
   AnswerCard,
   GameState,
-  GameStatus,
+  IntroDialogEntry,
   JudgementResult,
+  NextActionHint,
   Persona,
   Player,
-  PlayingCard,
   PromptCard,
 } from "../../src/cards-against-ai/types.js";

@@ -1,9 +1,4 @@
-import { fisherYatesShuffle } from "./fisherYatesShuffle";
 import { AnswerCard } from "./types";
-
-export async function fetchAnswerDeck(): Promise<AnswerCard[]> {
-    throw new Error("Not implemented");
-}
 
 const FAKE_ANSWER_CARDS: AnswerCard[] = [
     { id: "answer-001", type: "answer", text: "A sad trombone." },
@@ -110,8 +105,4 @@ const FAKE_ANSWER_CARDS: AnswerCard[] = [
 
 export function createFakeAnswerDeck(): AnswerCard[] {
     return FAKE_ANSWER_CARDS;
-}
-
-export async function fetchFakeAnswerDeck(): Promise<AnswerCard[]> {
-    return fisherYatesShuffle(createFakeAnswerDeck());
 }

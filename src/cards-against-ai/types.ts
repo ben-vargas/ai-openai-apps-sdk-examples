@@ -10,8 +10,6 @@ export interface PromptCard {
   text: string;
 }
 
-export type PlayingCard = AnswerCard | PromptCard;
-
 export interface Persona {
   id: string;
   name: string;
@@ -36,11 +34,6 @@ export interface PlayedAnswerCard {
   playerComment?: string;
 }
 
-export interface OutcomeReaction {
-  playerId: string;
-  reaction: string;
-}
-
 export type GameStatus =
   | "initializing"
   | "waiting-for-players"
@@ -63,6 +56,21 @@ export interface JudgementResult {
   reactionToWinningCard?: string;
 }
 
+export type NextActionHint =
+  | { action: "submit-cpu-answers"; description: string }
+  | { action: "submit-cpu-judgement"; description: string }
+  | { action: "human-judge-pending"; description: string }
+  | { action: "human-answer-pending"; description: string }
+  | { action: "submit-prompt"; description: string }
+  | { action: "game-over"; description: string }
+  | null;
+
+export interface IntroDialogEntry {
+  playerId: string;
+  playerName: string;
+  dialog: string;
+}
+
 export interface GameState {
   gameKey: string;
   prompt: PromptCard | null;
@@ -76,5 +84,4 @@ export interface GameState {
   discardedAnswerCards: string[];
   discardedPromptCards: PromptCard[];
   judgementResult: JudgementResult | null;
-  outcomeReactions: OutcomeReaction[];
 }

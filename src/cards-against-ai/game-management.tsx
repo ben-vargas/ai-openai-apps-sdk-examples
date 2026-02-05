@@ -4,41 +4,19 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useReducer,
   useRef,
+  useState,
 } from "react";
-import { buildApiUrl } from "./api-base-url";
 import {
   AnswerCard,
   GameState,
-  GameStatus,
-  JudgementResult,
+  NextActionHint,
   Player,
-  PromptCard,
 } from "./types";
-import { fetchPromptCard } from "./fetchPromptCard";
-import { fetchFakePlayers } from "./fetchPlayers";
-import { fetchFakeAnswerDeck } from "./fetchAnswerDeck";
+import { useMcpApp, type ToolResultData } from "./McpAppProvider";
 
-const TARGET_HAND_SIZE = 7;
-
-export function getAnswerCardById(state: GameState, cardId: string): AnswerCard {
-  const card = state.answerCards[cardId];
-  if (!card) {
-    throw new Error(`Answer card not found: ${cardId}`);
-  }
-  return card;
-}
-
-export function getAnswerCardsByIds(
-  state: GameState,
-  cardIds: string[],
-): AnswerCard[] {
-  const cards: AnswerCard[] = [];
-  for (const cardId of cardIds) {
-    cards.push(getAnswerCardById(state, cardId));
-  }
-  return cards;
+export function getAnswerCardById(state: GameState, cardId: string): AnswerCard | null {
+  return state.answerCards[cardId] ?? null;
 }
 
 export interface GameManager {
@@ -46,20 +24,16 @@ export interface GameManager {
   localPlayerId: string | null;
   playAnswerCard(cardId: string, player: Player): Promise<void>;
   judgeAnswerCard(cardId: string, judge: Player): Promise<void>;
-  dealCards(
-    playersSnapshot: Player[],
-    deckSnapshot: AnswerCard[],
-  ): Promise<void>;
-  setAnswerDeck(answerDeck: string[]): void;
 }
 
-const GameManagementContext = createContext<GameManager | null>(null);
+export const GameManagementContext = createContext<GameManager | null>(null);
 
 interface GameManagementProviderProps {
   children: React.ReactNode;
   gameId: string | null;
   gameKey: string | null;
   localPlayerId: string | null;
+  serverGameState: GameState | null;
 }
 
 const createInitialGameState = (gameKey: string | null): GameState => ({
@@ -75,126 +49,31 @@ const createInitialGameState = (gameKey: string | null): GameState => ({
   discardedAnswerCards: [],
   discardedPromptCards: [],
   judgementResult: null,
-  outcomeReactions: [],
 });
 
-interface ServerStateChangedAction {
-  type: "SERVER_STATE_CHANGED";
-  state: GameState;
+/** Actions where the LLM must act — widget watches for state changes. */
+const LLM_DEPENDENT_ACTIONS = new Set([
+  "submit-cpu-answers",
+  "submit-cpu-judgement",
+  "submit-prompt",
+]);
+
+/** Widget-side timeout for watch-game-state calls (above the server's 45s hold). */
+const WATCH_TOOL_TIMEOUT_MS = 55_000;
+
+function isLlmDependentAction(nextAction: NextActionHint): boolean {
+  return nextAction != null && LLM_DEPENDENT_ACTIONS.has(nextAction.action);
 }
 
-interface PlayAnswerCardAction {
-  type: "PLAY_ANSWER_CARD";
-  cardId: string;
-  player: Player;
-}
-
-interface SetPlayersAndDeckAction {
-  type: "SET_PLAYERS_AND_DECK";
-  players: Player[];
-  answerDeck: string[];
-}
-
-interface SetPromptAction {
-  type: "SET_PROMPT";
-  prompt: PromptCard;
-}
-
-interface SetAnswerDeckAction {
-  type: "SET_ANSWER_DECK";
-  answerDeck: string[];
-}
-
-interface SetStatusAction {
-  type: "SET_STATUS";
-  status: GameStatus;
-}
-
-type GameAction =
-  | ServerStateChangedAction
-  | PlayAnswerCardAction
-  | SetPlayersAndDeckAction
-  | SetPromptAction
-  | SetAnswerDeckAction
-  | SetStatusAction;
-
-function applyPlayAnswerCardAction(
-  prev: GameState,
-  action: PlayAnswerCardAction,
-): GameState {
-  if (prev.status !== "waiting-for-answers") {
-    throw new Error(`Cannot play answer card while game is ${prev.status}`);
-  }
-
-  if (prev.playedAnswerCards.some((played) => played.playerId === action.player.id)) {
-    throw new Error(`Player ${action.player.id} has already played a card`);
-  }
-
-  if (!action.player.answerCards.includes(action.cardId)) {
-    throw new Error(
-      `Player ${action.player.id} does not have this card in their hand`,
-    );
-  }
-
-  return {
-    ...prev,
-    playedAnswerCards: [
-      ...prev.playedAnswerCards,
-      { cardId: action.cardId, playerId: action.player.id },
-    ],
-    players: prev.players.map((player) =>
-      player.id === action.player.id
-        ? {
-            ...player,
-            answerCards: player.answerCards.filter(
-              (cardId) => cardId !== action.cardId,
-            ),
-          }
-        : player,
-    ),
-  };
-}
-
-function applyCommonAction(prev: GameState, action: GameAction): GameState | null {
-  switch (action.type) {
-    case "SET_PLAYERS_AND_DECK":
-      return { ...prev, players: action.players, answerDeck: action.answerDeck };
-    case "SET_PROMPT":
-      return { ...prev, prompt: action.prompt };
-    case "SET_ANSWER_DECK":
-      return { ...prev, answerDeck: action.answerDeck };
-    case "SET_STATUS":
-      return { ...prev, status: action.status };
-    default:
-      return null;
-  }
-}
-
-function createStatusReducer(
-  status: GameStatus,
-): (prev: GameState, action: GameAction) => GameState {
-  switch (status) {
-    case "waiting-for-answers":
-      return (prev, action) => {
-        if (action.type === "PLAY_ANSWER_CARD") {
-          return applyPlayAnswerCardAction(prev, action);
-        }
-
-        const next = applyCommonAction(prev, action);
-        return next ?? prev;
-      };
-    case "dealing":
-    case "prepare-for-next-round":
-      return (prev, action) => {
-        const next = applyCommonAction(prev, action);
-        return next ?? prev;
-      };
-    default:
-      return (prev, action) => {
-        const next = applyCommonAction(prev, action);
-        return next ?? prev;
-      };
-  }
+/**
+ * Extract ToolResultData from a callServerTool result.
+ * Returns null if the result is an error or has no structuredContent.
+ */
+function extractToolResultData(
+  result: Awaited<ReturnType<NonNullable<ReturnType<typeof useMcpApp>["app"]>["callServerTool"]>>,
+): ToolResultData | null {
+  if (!result || result.isError) return null;
+  return (result.structuredContent as ToolResultData | undefined) ?? null;
 }
 
 export function GameManagementProvider({
@@ -202,152 +81,270 @@ export function GameManagementProvider({
   gameId,
   gameKey,
   localPlayerId,
+  serverGameState,
 }: GameManagementProviderProps) {
-  const runGameLogicRef = useRef(
-    (prev: GameState, _action: GameAction) => prev,
-  );
-  const [gameState, dispatch] = useReducer(
-    (prev: GameState, action: GameAction) => {
-      if (action.type === "SERVER_STATE_CHANGED") {
-        return action.state;
-      }
+  const { app, updateToolResultData } = useMcpApp();
+  const gameIdRef = useRef(gameId);
+  gameIdRef.current = gameId;
 
-      return runGameLogicRef.current(prev, action);
-    },
-    createInitialGameState(gameKey),
-  );
+  const serverGameStateRef = useRef(serverGameState);
+  serverGameStateRef.current = serverGameState;
 
-  const runGameLogic = useMemo(
-    () => createStatusReducer(gameState.status),
-    [gameState.status],
+  // Derive server state synchronously
+  const resolvedServerState = useMemo(
+    () => serverGameState ?? createInitialGameState(gameKey),
+    [serverGameState, gameKey],
   );
 
+  // Local override for optimistic updates.
+  // Tagged with the serverGameState it was derived from — automatically
+  // becomes stale when a new server state arrives via the prop.
+  // NOTE: `basedOn` uses reference equality. This works because
+  // `serverGameState` only changes identity on new tool responses.
+  const [localOverride, setLocalOverride] = useState<{
+    state: GameState;
+    basedOn: GameState | null;
+  } | null>(null);
+
+  const gameState =
+    localOverride && localOverride.basedOn === serverGameState
+      ? localOverride.state
+      : resolvedServerState;
+
+  // Ref to track active watch so we can cancel it on unmount or new action
+  const watchAbortRef = useRef<AbortController | null>(null);
+
+  // Cleanup watch on unmount
   useEffect(() => {
-    runGameLogicRef.current = runGameLogic;
-  }, [runGameLogic]);
+    return () => {
+      watchAbortRef.current?.abort();
+    };
+  }, []);
 
-  const handleGameEvent = useCallback(
-    (event: { type: "state-changed"; data: GameState }) => {
-      dispatch({ type: "SERVER_STATE_CHANGED", state: event.data });
+  /**
+   * Long-poll `watch-game-state` — the server holds the response until state
+   * changes or a ~45s timeout elapses. On timeout the widget retries immediately.
+   * On change it updates state and continues watching if still LLM-dependent.
+   */
+  const watchForStateChange = useCallback(
+    async (knownStatus: string, signal: AbortSignal) => {
+      if (!app) return;
+      const currentGameId = gameIdRef.current;
+      if (!currentGameId) return;
+
+      while (!signal.aborted) {
+        try {
+          const result = await app.callServerTool(
+            {
+              name: "watch-game-state",
+              arguments: { gameId: currentGameId, knownStatus },
+            },
+            { timeout: WATCH_TOOL_TIMEOUT_MS },
+          );
+
+          if (signal.aborted) return;
+
+          const data = extractToolResultData(result);
+          if (!data) continue;
+
+          const responseType = (data as { type?: string }).type;
+
+          if (responseType === "timeout") {
+            // Server timed out with no change — retry immediately
+            continue;
+          }
+
+          // State changed — push update
+          if (data.gameState) {
+            setLocalOverride(null);
+            updateToolResultData(data);
+
+            // If still LLM-dependent, keep watching with new baseline
+            const nextAction = (data as { nextAction?: NextActionHint }).nextAction ?? null;
+            if (nextAction && isLlmDependentAction(nextAction)) {
+              knownStatus = data.gameState.status;
+              continue;
+            }
+          }
+
+          return; // Done — human turn or game over
+        } catch (err) {
+          if (signal.aborted) return;
+          console.warn("[cards-ai] watch-game-state failed, retrying", err);
+          // Brief pause before retry on error
+          await new Promise((r) => setTimeout(r, 2000));
+        }
+      }
     },
-    [],
+    [app, updateToolResultData],
   );
 
-  useGameEvents(handleGameEvent, { gameId });
+  /**
+   * After a human action, apply the server response and start watching if
+   * the next action is LLM-dependent.
+   */
+  const handleServerResponse = useCallback(
+    (data: ToolResultData) => {
+      // Clear optimistic override — we have real server state
+      setLocalOverride(null);
+      updateToolResultData(data);
+
+      const nextAction = (data as { nextAction?: NextActionHint }).nextAction ?? null;
+
+      // Always send a message to nudge the LLM if the next step is LLM-dependent
+      if (nextAction && isLlmDependentAction(nextAction)) {
+        const actionMessages: Record<string, string> = {
+          "submit-cpu-answers": "I played my answer card. Continue with the next game action.",
+          "submit-cpu-judgement": "All cards are played. The CPU judge should pick a winner now.",
+          "submit-prompt": "Round complete. Continue with the next prompt.",
+        };
+        const messageText = actionMessages[nextAction.action]
+          ?? "Continue with the next game action.";
+
+        app?.sendMessage({
+          role: "user",
+          content: [{ type: "text", text: messageText }],
+        }).catch((err: unknown) => {
+          console.warn("[cards-ai] sendMessage failed", err);
+        });
+
+        // Cancel any existing watch and start fresh
+        watchAbortRef.current?.abort();
+        const abort = new AbortController();
+        watchAbortRef.current = abort;
+
+        const snapshotStatus = data.gameState?.status ?? "";
+        watchForStateChange(snapshotStatus, abort.signal).catch((err) => {
+          console.warn("[cards-ai] watchForStateChange error", err);
+        });
+      }
+    },
+    [app, updateToolResultData, watchForStateChange],
+  );
 
   const playAnswerCard = useCallback(
     async (cardId: string, player: Player) => {
-      if (!gameId) {
-        dispatch({ type: "PLAY_ANSWER_CARD", cardId, player });
+      const currentGameId = gameIdRef.current;
+      if (!currentGameId) {
+        console.warn("[cards-ai] no gameId for playAnswerCard");
         return;
       }
 
+      // Optimistic local update
+      setLocalOverride((prev) => {
+        const snapshot = serverGameStateRef.current;
+        const base =
+          prev && prev.basedOn === snapshot
+            ? prev.state
+            : (snapshot ?? createInitialGameState(null));
+        if (base.status !== "waiting-for-answers") return prev;
+        if (base.playedAnswerCards.some((p) => p.playerId === player.id))
+          return prev;
+        return {
+          state: {
+            ...base,
+            playedAnswerCards: [
+              ...base.playedAnswerCards,
+              { cardId, playerId: player.id },
+            ],
+            players: base.players.map((p) =>
+              p.id === player.id
+                ? {
+                    ...p,
+                    answerCards: p.answerCards.filter((id) => id !== cardId),
+                  }
+                : p,
+            ),
+          },
+          basedOn: snapshot,
+        };
+      });
+
       try {
-        const response = await fetch(buildApiUrl(`/game/${gameId}/actions`), {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            type: "PLAYER_PLAYED_ANSWER_CARD",
+        if (!app) {
+          console.warn("[cards-ai] MCP app not available");
+          setLocalOverride(null);
+          return;
+        }
+        const result = await app.callServerTool({
+          name: "play-answer-card",
+          arguments: {
+            gameId: currentGameId,
             playerId: player.id,
             cardId,
-          }),
+          },
         });
-        if (!response.ok) {
-          const body = await response.text();
-          throw new Error(body || response.statusText);
+
+        const data = extractToolResultData(result);
+        if (data) {
+          handleServerResponse(data);
         }
       } catch (error) {
         console.error("[cards-ai] failed to play answer card", error);
+        setLocalOverride(null); // Roll back optimistic update
       }
     },
-    [gameId],
+    [app, handleServerResponse],
   );
 
   const judgeAnswerCard = useCallback(
     async (cardId: string, judge: Player) => {
-      const playedCard = gameState.playedAnswerCards.find(
-        (played) => played.cardId === cardId,
-      );
-      if (!playedCard) {
-        console.warn("[cards-ai] missing played answer card", { cardId });
+      const currentGameId = gameIdRef.current;
+      if (!currentGameId) {
+        console.warn("[cards-ai] no gameId for judgeAnswerCard");
         return;
       }
 
-      const result: JudgementResult = {
-        judgeId: judge.id,
-        winningCardId: cardId,
-        winningPlayerId: playedCard.playerId,
-      };
-
-      if (!gameId) {
-        console.warn("[cards-ai] missing game id for judgement", { result });
-        return;
-      }
+      // Optimistic local update
+      setLocalOverride((prev) => {
+        const snapshot = serverGameStateRef.current;
+        const base =
+          prev && prev.basedOn === snapshot
+            ? prev.state
+            : (snapshot ?? createInitialGameState(null));
+        if (base.status !== "judging") return prev;
+        const played = base.playedAnswerCards.find((p) => p.cardId === cardId);
+        if (!played) return prev;
+        return {
+          state: {
+            ...base,
+            status: "display-judgement",
+            judgementResult: {
+              judgeId: judge.id,
+              winningCardId: cardId,
+              winningPlayerId: played.playerId,
+            },
+          },
+          basedOn: snapshot,
+        };
+      });
 
       try {
-        const response = await fetch(buildApiUrl(`/game/${gameId}/actions`), {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            type: "RETURN_JUDGEMENT",
-            result,
-          }),
+        if (!app) {
+          console.warn("[cards-ai] MCP app not available");
+          setLocalOverride(null);
+          return;
+        }
+        const result = await app.callServerTool({
+          name: "judge-answer-card",
+          arguments: {
+            gameId: currentGameId,
+            playerId: judge.id,
+            winningCardId: cardId,
+          },
         });
-        if (!response.ok) {
-          const body = await response.text();
-          throw new Error(body || response.statusText);
+
+        const data = extractToolResultData(result);
+        if (data) {
+          handleServerResponse(data);
         }
       } catch (error) {
         console.error("[cards-ai] failed to submit judgement", error);
+        setLocalOverride(null); // Roll back optimistic update
       }
     },
-    [gameId, gameState.playedAnswerCards],
+    [app, handleServerResponse],
   );
-
-  const dealCards = useCallback(
-    async (playersSnapshot: Player[], deckSnapshot: AnswerCard[]) => {
-      let i = 0;
-      const deck = deckSnapshot.map((card) => card.id);
-      const players = playersSnapshot.map((player) => ({
-        ...player,
-        answerCards: [...player.answerCards],
-      }));
-
-      dispatch({ type: "SET_STATUS", status: "dealing" });
-
-      while (
-        players.some((player) => player.answerCards.length < TARGET_HAND_SIZE)
-      ) {
-        await new Promise((resolve) => setTimeout(resolve, 200));
-        const playerIndex = i % players.length;
-        const player = players[playerIndex];
-        if (player.answerCards.length < TARGET_HAND_SIZE) {
-          const nextCardId = deck.shift();
-          if (!nextCardId) {
-            throw new Error(`No more cards to deal`);
-          }
-          player.answerCards.push(nextCardId);
-          const playersSnapshot = players.map((entry) => ({
-            ...entry,
-            answerCards: [...entry.answerCards],
-          }));
-          dispatch({
-            type: "SET_PLAYERS_AND_DECK",
-            players: playersSnapshot,
-            answerDeck: [...deck],
-          });
-        }
-        i++;
-      }
-
-      dispatch({ type: "SET_STATUS", status: "dealing" });
-    },
-    [],
-  );
-
-  const setAnswerDeck = useCallback((answerDeck: string[]) => {
-    dispatch({ type: "SET_ANSWER_DECK", answerDeck });
-  }, []);
 
   const gameManager = useMemo(
     () => ({
@@ -355,16 +352,12 @@ export function GameManagementProvider({
       localPlayerId,
       playAnswerCard,
       judgeAnswerCard,
-      dealCards,
-      setAnswerDeck,
     }),
     [
       gameState,
       localPlayerId,
       playAnswerCard,
       judgeAnswerCard,
-      dealCards,
-      setAnswerDeck,
     ],
   );
 
@@ -389,108 +382,4 @@ export function useGameState() {
   const gameManager = useGameManagement();
 
   return gameManager.gameState;
-}
-
-function useGameEvents(
-  callback: (event: { type: "state-changed"; data: GameState }) => void,
-  options: { gameId: string | null },
-) {
-  const { gameId } = options;
-  const isFallback = gameId == null;
-
-  useEffect(() => {
-    let isMounted = true;
-
-    if (isFallback) {
-      (async () => {
-        const baseState = createInitialGameState(null);
-        const players: Player[] = [];
-        for await (const player of fetchFakePlayers()) {
-          players.push(player);
-        }
-
-        const answerDeck = await fetchFakeAnswerDeck();
-        const deck = answerDeck.map((card) => card.id);
-        const answerCards: Record<string, AnswerCard> = {};
-        for (const card of answerDeck) {
-          answerCards[card.id] = card;
-        }
-        const dealtPlayers: Player[] = [];
-
-        for (const player of players) {
-          const hand: string[] = [];
-          while (hand.length < TARGET_HAND_SIZE && deck.length > 0) {
-            const nextCardId = deck.shift();
-            if (!nextCardId) {
-              break;
-            }
-            hand.push(nextCardId);
-          }
-          dealtPlayers.push({ ...player, answerCards: hand });
-        }
-
-        const prompt = await fetchPromptCard();
-
-        if (!isMounted) {
-          return;
-        }
-
-        const fakeState: GameState = {
-          ...baseState,
-          answerCards,
-          players: dealtPlayers,
-          answerDeck: deck,
-          prompt,
-          status: "waiting-for-answers",
-          currentJudgePlayerIndex: 0,
-        };
-
-        callback({ type: "state-changed", data: fakeState });
-      })();
-
-      return () => {
-        isMounted = false;
-      };
-    }
-
-    const eventUrl = buildApiUrl(`/game/${gameId}/events`);
-    const streamLabel = `[cards-ai events ${gameId}]`;
-    console.info(`${streamLabel} connecting`, { url: eventUrl });
-
-    const eventSource = new EventSource(eventUrl);
-    eventSource.onopen = () => {
-      console.info(`${streamLabel} connected`);
-    };
-    eventSource.onerror = (error) => {
-      console.error(`${streamLabel} error`, error);
-      if (import.meta.env.DEV && typeof window !== "undefined") {
-        try {
-          window.sessionStorage.removeItem("cards-against-ai-dev-game");
-        } catch {
-          // ignore cache clearing errors
-        }
-      }
-    };
-    const handleStateEvent = (event: MessageEvent<string>) => {
-      try {
-        const data = JSON.parse(event.data) as GameState;
-        const parsed = { type: "state-changed", data } as const;
-        console.info(`${streamLabel} state`, parsed);
-        callback(parsed);
-      } catch (error) {
-        console.error(`${streamLabel} state parse failed`, {
-          error,
-          raw: event.data,
-        });
-      }
-    };
-
-    eventSource.addEventListener("state", handleStateEvent);
-
-    return () => {
-      console.info(`${streamLabel} closing`);
-      eventSource.removeEventListener("state", handleStateEvent);
-      eventSource.close();
-    };
-  }, [callback, gameId, isFallback]);
 }

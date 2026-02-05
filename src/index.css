@@ -3,124 +3,24 @@
 @source "../node_modules/@openai/apps-sdk-ui";
 @source ".";
 
-.cards-ai-card-flight {
-  box-shadow: var(--card-shadow-base);
-  border-radius: 1rem;
-  transform-style: preserve-3d;
-}
-
-.cards-ai-card {
-  --card-shadow-base: 0 12px 30px -10px rgba(15, 23, 42, 0.55);
-  width: 160px;
-  height: 220px;
-  transform: translate3d(var(--card-x, 0px), var(--card-y, 0px), 0px)
-    rotate(var(--card-rotation, 0deg));
-  transition: transform 800ms cubic-bezier(0.24, 0.96, 0.38, 1);
-  transform-style: preserve-3d;
-}
-
-.cards-ai-card-winner .cards-ai-card-flight {
-  box-shadow:
-    0 12px 30px -10px rgba(15, 23, 42, 0.55),
-    0 0 30px 6px rgba(250, 204, 21, 0.8);
-  animation: cards-ai-winner-glow 1.8s ease-in-out infinite;
-}
-
-.cards-ai-card-winner-face {
-  outline: 6px solid rgb(250, 204, 21);
-  outline-offset: 0;
-  box-sizing: border-box;
-}
-
 @keyframes cards-ai-winner-glow {
   0%,
   100% {
     box-shadow:
       0 12px 30px -10px rgba(15, 23, 42, 0.55),
-      0 0 30px 6px rgba(250, 204, 21, 0.7);
+      0 0 14px 3px rgba(250, 204, 21, 0.7);
   }
 
   50% {
     box-shadow:
       0 14px 34px -12px rgba(15, 23, 42, 0.6),
-      0 0 44px 10px rgba(250, 204, 21, 0.95);
+      0 0 20px 5px rgba(250, 204, 21, 0.95);
   }
 }
 
-.cards-ai-card:hover,
-.cards-ai-card:has(button:focus-visible) {
-  z-index: 30;
-}
-
-.cards-ai-info-panel {
-  transform: translate3d(var(--panel-x, 0px), var(--panel-y, 0px), 0px)
-    translate(-50%, -100%);
-  transition: transform 800ms cubic-bezier(0.24, 0.96, 0.38, 1);
-}
-
-.cards-ai-toast-stack {
-  transform: translate3d(var(--panel-x, 0px), var(--panel-y, 0px), 0px)
-    translate(-50%, 0%);
-  transition: transform 800ms cubic-bezier(0.24, 0.96, 0.38, 1);
-}
-
-.cards-ai-toast-bubble {
-  position: relative;
-  border-radius: 16px;
-  border: 1px solid rgba(15, 23, 42, 0.15);
-  backdrop-filter: blur(2px);
-}
-
-.cards-ai-toast-bubble::after {
-  content: "";
-  position: absolute;
-  top: -6px;
-  left: 50%;
-  width: 12px;
-  height: 12px;
-  background: inherit;
-  border-left: 1px solid rgba(15, 23, 42, 0.15);
-  border-top: 1px solid rgba(15, 23, 42, 0.15);
-  transform: translateX(-50%) rotate(45deg);
-}
-
-@media (prefers-color-scheme: dark) {
-  .cards-ai-toast-bubble {
-    border-color: rgba(148, 163, 184, 0.4);
-  }
-
-  .cards-ai-toast-bubble::after {
-    border-left-color: rgba(148, 163, 184, 0.4);
-    border-top-color: rgba(148, 163, 184, 0.4);
-  }
-}
-
-@keyframes cards-ai-toast-lifecycle {
-  0% {
-    opacity: 0;
-    transform: translateY(8px) scale(0.98);
-  }
-
-  8% {
-    opacity: 1;
-    transform: translateY(0px) scale(1);
-  }
-
-  82% {
-    opacity: 1;
-    transform: translateY(0px) scale(1);
-  }
-
-  100% {
-    opacity: 0;
-    transform: translateY(-6px) scale(0.98);
-  }
-}
-
-.cards-ai-card-inner {
-  transform: rotateY(var(--card-flip-rotation, 0deg));
-  transition: transform 300ms ease;
-  transform-style: preserve-3d;
+/* PiP mode styles */
+.cards-ai-pip {
+  font-size: 12px;
 }
 
 body {
