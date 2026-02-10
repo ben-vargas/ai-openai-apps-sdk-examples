@@ -1,152 +1,122 @@
-import { useEffect, useMemo, useRef } from "react";
-import { GameManagementContext, GameManagementProvider } from "./game-management";
-import { CardsAgainstAiGame } from "./CardsAgainstAiGame";
-import { McpAppProvider, useMcpApp } from "./McpAppProvider";
-import { DEV_SCENARIO_NAMES, getDevScenario } from "./dev-scenarios";
-import type { GameManager } from "./game-management";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { Dispatch, SetStateAction } from "react";
+import { useApp } from "@modelcontextprotocol/ext-apps/react";
+import type { App as McpApp } from "@modelcontextprotocol/ext-apps/react";
+import { PlayArea } from "./PlayArea";
+import { SplashScreen } from "./SplashScreen";
+import type { GameState } from "./types";
 
-interface PlayerIdPayload {
-  id?: string;
-}
+/** Widget-side timeout for watch-game-state calls (above the server's 45s hold). */
+const WATCH_TOOL_TIMEOUT_MS = 55_000;
 
-if (import.meta.env.DEV) {
-  void import("./dev-helper").then((module) =>
-    module.initCardsAgainstAiDevHelper(),
-  );
-}
+function useWatchGameState(
+  app: McpApp | null,
+  gameId: string | null,
+  gameState: GameState | null,
+  setGameState: Dispatch<SetStateAction<GameState | null>>,
+) {
+  const gameStateRef = useRef(gameState);
+  gameStateRef.current = gameState;
 
-const DEV_SCENARIO_PARAM = import.meta.env.DEV
-  ? new URLSearchParams(window.location.search).get("dev")
-  : null;
+  useEffect(() => {
+    if (!app || !gameState || !gameId) return;
 
-export default function App() {
-  if (DEV_SCENARIO_PARAM) {
-    return <DevScenarioApp scenario={DEV_SCENARIO_PARAM} />;
-  }
+    const abort = new AbortController();
+    const { signal } = abort;
 
-  return (
-    <McpAppProvider>
-      <ProductionApp />
-    </McpAppProvider>
-  );
-}
+    (async () => {
+      let knownStatus = gameStateRef.current?.status ?? "";
 
-function ProductionApp() {
-  const { toolResultData, toolInput } = useMcpApp();
-  const lastToolInputSignatureRef = useRef<string | null>(null);
-  const lastToolResultDataSignatureRef = useRef<string | null>(null);
+      while (!signal.aborted) {
+        try {
+          const result = await app.callServerTool(
+            {
+              name: "watch-game-state",
+              arguments: { gameId, knownStatus },
+            },
+            { timeout: WATCH_TOOL_TIMEOUT_MS },
+          );
 
-  // Extract localPlayerId from tool input and persist it — subsequent
-  // host-initiated tool calls (e.g. submit-cpu-answers) have different
-  // argument shapes that don't contain a player id.
-  const localPlayerIdRef = useRef<string | null>(null);
-  const localPlayerId = useMemo(() => {
-    if (toolInput) {
-      // join-game path: toolInput.player.id
-      const player = toolInput.player as PlayerIdPayload | undefined;
-      if (player?.id) {
-        localPlayerIdRef.current = player.id;
-        return player.id;
-      }
+          if (signal.aborted) return;
 
-      // start-game path: find human player in players array
-      const players = toolInput.players as Array<{ id?: string; type?: string }> | undefined;
-      if (Array.isArray(players)) {
-        const human = players.find((p) => p.type === "human");
-        if (human?.id) {
-          localPlayerIdRef.current = human.id;
-          return human.id;
+          const sc = result?.structuredContent as
+            | { type?: string; gameState?: GameState }
+            | undefined;
+          if (!sc) continue;
+
+          if (sc.type === "timeout") {
+            // Server timed out with no change — retry immediately
+            continue;
+          }
+
+          // State changed — update
+          if (sc.gameState) {
+            setGameState(sc.gameState);
+            knownStatus = sc.gameState.status;
+            continue;
+          }
+
+          return; // Unexpected shape — stop polling
+        } catch (err) {
+          if (signal.aborted) return;
+          console.warn("[cards-ai] watch-game-state failed, retrying", err);
+          await new Promise((r) => setTimeout(r, 2000));
         }
       }
-    }
+    })();
 
-    return localPlayerIdRef.current;
-  }, [toolInput]);
-
-  useEffect(() => {
-    const signature = JSON.stringify(toolInput);
-    if (signature === lastToolInputSignatureRef.current) {
-      return;
-    }
-    lastToolInputSignatureRef.current = signature;
-    if (toolInput) {
-      console.info("[cards-ai] tool input", toolInput);
-    }
-  }, [toolInput]);
-
-  useEffect(() => {
-    const signature = JSON.stringify(toolResultData);
-    if (signature === lastToolResultDataSignatureRef.current) {
-      return;
-    }
-    lastToolResultDataSignatureRef.current = signature;
-    if (toolResultData) {
-      console.info("[cards-ai] tool result data", toolResultData);
-    }
-  }, [toolResultData]);
-
-  const resolvedGameId = toolResultData?.gameId ?? null;
-  const resolvedGameKey = toolResultData?.gameKey ?? null;
-  const serverGameState = toolResultData?.gameState ?? null;
-
-  return (
-    <div className="h-screen w-screen overflow-auto bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
-      <GameManagementProvider
-        gameId={resolvedGameId}
-        gameKey={resolvedGameKey}
-        localPlayerId={localPlayerId}
-        serverGameState={serverGameState}
-      >
-        <CardsAgainstAiGame />
-      </GameManagementProvider>
-    </div>
-  );
+    return () => abort.abort();
+  }, [app, !!gameState, gameId]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
-function DevScenarioApp({ scenario }: { scenario: string }) {
-  const gameState = useMemo(() => getDevScenario(scenario), [scenario]);
+function useCardsAgainstAIGame() {
+  const [gameState, setGameState] = useState<GameState | null>(null);
+  const [gameId, setGameId] = useState<string | null>(null);
 
-  const mockManager = useMemo<GameManager | null>(() => {
-    if (!gameState) return null;
-    return {
-      gameState,
-      localPlayerId: "player-001",
-      playAnswerCard: async () => {
-        console.info("[dev] playAnswerCard called");
-      },
-      judgeAnswerCard: async () => {
-        console.info("[dev] judgeAnswerCard called");
-      },
+  const onAppCreated = useCallback((app: McpApp) => {
+    app.ontoolresult = (params) => {
+      const sc = params.structuredContent as
+        | { gameState?: GameState; gameId?: string }
+        | undefined;
+      if (sc?.gameState) {
+        setGameState(sc.gameState);
+      }
+      if (sc?.gameId) {
+        setGameId(sc.gameId);
+      }
     };
-  }, [gameState]);
+  }, []);
 
-  if (!mockManager) {
+  const { app } = useApp({
+    appInfo: { name: "cards-against-ai", version: "1.0.0" },
+    capabilities: {},
+    onAppCreated,
+  });
+
+  useWatchGameState(app, gameId, gameState, setGameState);
+
+  return { gameState, app } as const;
+}
+
+export default function App() {
+  const { gameState, app } = useCardsAgainstAIGame();
+  const [pipStarted, setPipStarted] = useState(false);
+
+  if (!pipStarted) {
     return (
-      <div className="flex h-screen w-screen flex-col items-center justify-center gap-4 bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
-        <div className="text-lg font-bold">
-          Unknown dev scenario: &quot;{scenario}&quot;
-        </div>
-        <div className="text-sm text-slate-500">Available scenarios:</div>
-        <div className="flex flex-wrap gap-2">
-          {DEV_SCENARIO_NAMES.map((name) => (
-            <a
-              key={name}
-              href={`?dev=${name}`}
-              className="rounded-lg bg-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-300 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
-            >
-              {name}
-            </a>
-          ))}
-        </div>
-      </div>
+      <SplashScreen
+        status={gameState?.status ?? "initializing"}
+        onStart={() => {
+          app?.requestDisplayMode({ mode: "pip" });
+          setPipStarted(true);
+        }}
+      />
     );
   }
 
-  return (
-    <div className="h-screen w-screen overflow-auto bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
-      <GameManagementContext.Provider value={mockManager}>
-        <CardsAgainstAiGame />
-      </GameManagementContext.Provider>
-    </div>
-  );
+  if (!gameState) {
+    return <div>Loading...</div>;
+  }
+
+  return <PlayArea gameState={gameState} />;
 }

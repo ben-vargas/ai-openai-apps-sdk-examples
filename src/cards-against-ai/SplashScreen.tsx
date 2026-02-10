@@ -1,6 +1,5 @@
 import cardBackPattern from "./assets/card-back-pattern.png";
 import { getAssetsBaseUrl } from "./api-base-url";
-import { useMcpApp } from "./McpAppProvider";
 import type { GameStatus } from "./types";
 
 const LOADING_STATUSES: GameStatus[] = ["initializing", "waiting-for-players"];
@@ -11,7 +10,6 @@ interface SplashScreenProps {
 }
 
 export function SplashScreen({ status, onStart }: SplashScreenProps) {
-  const { app } = useMcpApp();
   const isLoading = LOADING_STATUSES.includes(status);
 
   const assetsBaseUrl = getAssetsBaseUrl();
@@ -20,9 +18,6 @@ export function SplashScreen({ status, onStart }: SplashScreenProps) {
     : cardBackPattern;
 
   const handleStartClick = () => {
-    app?.requestDisplayMode({ mode: "pip" }).catch((err: unknown) => {
-      console.warn("[cards-ai] requestDisplayMode failed", err);
-    });
     onStart();
   };
 

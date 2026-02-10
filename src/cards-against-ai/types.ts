@@ -43,7 +43,6 @@ export type GameStatus =
   | "game-ended"
   | "display-judgement"
   | "clearing-played-cards"
-  | "prepare-for-next-round"
   | "announce-winner";
 
 export interface JudgementResult {
