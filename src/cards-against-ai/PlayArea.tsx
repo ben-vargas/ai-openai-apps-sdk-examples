@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { App as McpApp } from "@modelcontextprotocol/ext-apps/react";
 import {
   CARD_HEIGHT,
   CARD_WIDTH,
@@ -31,9 +32,9 @@ const MIN_PLAY_AREA_HEIGHT =
 // --- Component ---
 
 export interface PlayAreaProps {
+  app: McpApp | null;
   gameId: string | null;
   gameState: GameState | null;
-  sendGameMessage: (text: string) => Promise<void>;
 }
 
 /**
@@ -43,7 +44,7 @@ export interface PlayAreaProps {
  * are displayed correctly.
  */
 export function PlayArea(props: PlayAreaProps) {
-  const { gameId, gameState, sendGameMessage } = props;
+  const { app, gameId, gameState } = props;
   const containerRef = useRef<HTMLDivElement>(null);
   const [bounds, setBounds] = useState<Bounds | null>(null);
   const pendingActionRef = useRef(false);
@@ -70,50 +71,59 @@ export function PlayArea(props: PlayAreaProps) {
 
   const playCard = useCallback(
     async (cardId: string, playerId: string) => {
-      if (pendingActionRef.current || !gameId) return;
-
+      if (pendingActionRef.current || !app || !gameId) return;
       pendingActionRef.current = true;
       try {
-        await sendGameMessage(
-          `I'm playing my answer card. [gameId=${gameId}, playerId=${playerId}, cardId=${cardId}]. Call play-answer-card and continue with the game.`,
-        );
+        await app.callServerTool({
+          name: "play-answer-card",
+          arguments: { gameId, playerId, cardId },
+        });
+        // Nudge model to handle CPU turns
+        await app.sendMessage({
+          role: "user",
+          content: [{ type: "text", text: "Continue with the game." }],
+        });
       } catch (err) {
         console.error("[cards-ai] playCard failed", err);
       } finally {
         pendingActionRef.current = false;
       }
     },
-    [sendGameMessage, gameId]
+    [app, gameId]
   );
 
   const judgeCard = useCallback(
     async (winningCardId: string, judgeId: string) => {
-      if (pendingActionRef.current || !gameId) return;
+      if (pendingActionRef.current || !app || !gameId) return;
       pendingActionRef.current = true;
       try {
-        await sendGameMessage(
-          `I'm judging the winning card. [gameId=${gameId}, playerId=${judgeId}, winningCardId=${winningCardId}]. Call judge-answer-card and continue with the game.`,
-        );
+        await app.callServerTool({
+          name: "judge-answer-card",
+          arguments: { gameId, playerId: judgeId, winningCardId },
+        });
       } catch (err) {
         console.error("[cards-ai] judgeCard failed", err);
       } finally {
         pendingActionRef.current = false;
       }
     },
-    [sendGameMessage, gameId]
+    [app, gameId]
   );
 
   const nextRound = useCallback(async () => {
-    if (pendingActionRef.current) return;
+    if (pendingActionRef.current || !app) return;
     pendingActionRef.current = true;
     try {
-      await sendGameMessage("Next round, please.");
+      await app.sendMessage({
+        role: "user",
+        content: [{ type: "text", text: "Next round, please." }],
+      });
     } catch (err) {
       console.error("[cards-ai] nextRound failed", err);
     } finally {
       pendingActionRef.current = false;
     }
-  }, [sendGameMessage]);
+  }, [app]);
 
   // --- Build positioned card elements ---
   const localPlayerId = gameState ? getLocalPlayerId(gameState) : null;
