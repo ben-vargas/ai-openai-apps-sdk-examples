@@ -54,10 +54,10 @@ export interface JudgementResult {
 }
 
 export type NextActionHint =
-  | { action: "submit-cpu-answers"; description: string }
-  | { action: "submit-cpu-judgement"; description: string }
+  | { action: "advance-cpu-turn"; description: string }
   | { action: "human-judge-pending"; description: string }
   | { action: "human-answer-pending"; description: string }
+  | { action: "wait-for-next-round"; description: string }
   | { action: "submit-prompt"; description: string }
   | { action: "game-over"; description: string }
   | null;

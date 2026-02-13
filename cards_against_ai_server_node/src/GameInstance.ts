@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import {
   AnswerCard,
   GameState,
@@ -77,11 +78,10 @@ interface GameInstanceOptions {
   firstPrompt: string;
 }
 
-export class GameInstance {
+export class GameInstance extends EventEmitter {
   /** A unique key for the game instance. This can be used later to join the game. */
   readonly key = generateKey();
   private readonly options: GameInstanceOptions;
-  private _changeListeners: Array<() => void> = [];
 
   private state: GameState = {
     gameKey: this.key,
@@ -97,6 +97,7 @@ export class GameInstance {
   };
 
   constructor(options: GameInstanceOptions) {
+    super();
     this.options = options;
   }
 
@@ -150,7 +151,8 @@ export class GameInstance {
         (played) => played.playerId === playerId,
       )
     ) {
-      throw new Error(`Player ${playerId} has already played a card`);
+      // Idempotent: already played, return silently
+      return;
     }
     if (!player.answerCards.includes(cardId)) {
       throw new Error(
@@ -237,6 +239,24 @@ export class GameInstance {
       winningPlayerId: winningEntry.playerId,
       reactionToWinningCard: reaction,
     });
+  }
+
+  /**
+   * Single consolidated tool: submit CPU answers AND optionally CPU judgement in one call.
+   * Reduces sequential tool calls from 2-3 to 1, preventing concurrent widget crashes.
+   */
+  advanceCpuTurn(
+    cpuAnswerChoices: Array<{ playerId: string; cardId: string; playerComment?: string }>,
+    cpuJudgement?: { winningCardId: string; reactionToWinningCard?: string },
+  ) {
+    this.submitCpuAnswers(cpuAnswerChoices);
+
+    if (cpuJudgement && this.state.status === "judging") {
+      const judge = this.state.players[this.state.currentJudgePlayerIndex];
+      if (judge?.type === "cpu") {
+        this.submitCpuJudgement(cpuJudgement);
+      }
+    }
   }
 
   /**
@@ -336,7 +356,7 @@ export class GameInstance {
         };
       }
 
-      // Then CPU players
+      // CPU players need to play (and possibly judge) — single consolidated action
       const cpuPlayersWhoNeedToPlay = players.filter(
         (p) =>
           p.type === "cpu" &&
@@ -345,9 +365,10 @@ export class GameInstance {
       );
 
       if (cpuPlayersWhoNeedToPlay.length > 0) {
+        const judgeIsCpu = judge?.type === "cpu";
         return {
-          action: "submit-cpu-answers",
-          description: `CPU players need to play answer cards. ${cpuPlayersWhoNeedToPlay.length} CPU player(s) still need to play.`,
+          action: "advance-cpu-turn",
+          description: `CPU players need to play answer cards.${judgeIsCpu ? ` ${judge.persona?.name ?? "CPU judge"} will also judge.` : ""} Use the advance-cpu-turn tool.`,
         };
       }
 
@@ -357,8 +378,8 @@ export class GameInstance {
     if (status === "judging") {
       if (judge?.type === "cpu") {
         return {
-          action: "submit-cpu-judgement",
-          description: `${judge.persona?.name ?? "CPU judge"} needs to pick the winning card.`,
+          action: "advance-cpu-turn",
+          description: `${judge.persona?.name ?? "CPU judge"} needs to pick the winning card. Use the advance-cpu-turn tool with cpuJudgement only (no cpuAnswerChoices needed).`,
         };
       }
 
@@ -379,8 +400,8 @@ export class GameInstance {
       }
 
       return {
-        action: "submit-prompt",
-        description: "Round complete. Submit a new prompt card and replacement answer cards for the next round.",
+        action: "wait-for-next-round",
+        description: "Round complete. Wait for the human to click 'Next Round' before submitting a new prompt.",
       };
     }
 
@@ -395,6 +416,11 @@ export class GameInstance {
   }
 
   judgeAnswers(result: JudgementResult) {
+    // Idempotent: if not in judging state, return silently
+    if (this.state.status !== "judging") {
+      return;
+    }
+
     const currentJudge = this.state.players[this.state.currentJudgePlayerIndex];
     if (!currentJudge || currentJudge.id !== result.judgeId) {
       throw new Error(`Player ${result.judgeId} is not the current judge`);
@@ -560,37 +586,9 @@ export class GameInstance {
     }
   }
 
-  /**
-   * Returns a promise that resolves when the game state changes or the signal
-   * is aborted (e.g. timeout or client disconnect).
-   */
-  waitForChange(signal: AbortSignal): Promise<void> {
-    if (signal.aborted) return Promise.resolve();
-    return new Promise<void>((resolve) => {
-      const cleanup = () => {
-        this._changeListeners = this._changeListeners.filter((l) => l !== onChange);
-        resolve();
-      };
-      const onChange = () => {
-        signal.removeEventListener("abort", cleanup);
-        resolve();
-      };
-      signal.addEventListener("abort", cleanup, { once: true });
-      this._changeListeners.push(onChange);
-    });
-  }
-
-  private notifyChange() {
-    const listeners = this._changeListeners;
-    this._changeListeners = [];
-    for (const listener of listeners) {
-      listener();
-    }
-  }
-
   private dispatchAction(action: GameAction) {
     this.state = this.reducer(this.state, action);
-    this.notifyChange();
+    this.emit("change", this.state);
   }
 
   private getExpectedAnswerCount() {

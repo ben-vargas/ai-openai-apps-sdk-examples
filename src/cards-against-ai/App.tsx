@@ -3,23 +3,19 @@ import { useApp } from "@modelcontextprotocol/ext-apps/react";
 import type { App as McpApp } from "@modelcontextprotocol/ext-apps/react";
 import { PlayArea } from "./PlayArea";
 import { SplashScreen } from "./SplashScreen";
+import { getApiBaseUrl } from "./api-base-url";
 import type { GameState } from "./types";
-
-/** Widget-side timeout for watch-game-state calls (above the server's 45s hold). */
-const WATCH_TOOL_TIMEOUT_MS = 55_000;
 
 function useCardsAgainstAIGame() {
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [gameId, setGameId] = useState<string | null>(null);
 
   const onAppCreated = useCallback((app: McpApp) => {
+    // ontoolresult: only used to extract gameId from start-game
     app.ontoolresult = (params) => {
       const sc = params.structuredContent as
-        | { gameState?: GameState; gameId?: string }
+        | { gameId?: string }
         | undefined;
-      if (sc?.gameState) {
-        setGameState(sc.gameState);
-      }
       if (sc?.gameId) {
         setGameId(sc.gameId);
       }
@@ -32,52 +28,33 @@ function useCardsAgainstAIGame() {
     onAppCreated,
   });
 
-  // Watch loop — plain long-poll effect, no pause/restart coordination needed.
-  // Concurrent callServerTool/sendMessage calls are safe (unique messageIds),
-  // and the watch server self-corrects via immediate notifyChange() resolution.
+  // SSE: open EventSource when gameId is set
   useEffect(() => {
-    if (!app || !gameId) return;
-    const abort = new AbortController();
+    if (!gameId) return;
 
-    (async () => {
-      let knownStatus = "";
-      while (!abort.signal.aborted) {
-        try {
-          const result = await app.callServerTool(
-            {
-              name: "watch-game-state",
-              arguments: { gameId, knownStatus },
-            },
-            { timeout: WATCH_TOOL_TIMEOUT_MS },
-          );
+    const baseUrl = getApiBaseUrl();
+    const url = `${baseUrl}/mcp/game/${gameId}/state-stream`;
+    const es = new EventSource(url);
 
-          if (abort.signal.aborted) return;
-
-          const sc = result?.structuredContent as
-            | { type?: string; gameState?: GameState }
-            | undefined;
-          if (!sc) continue;
-
-          if (sc.type === "timeout") continue;
-
-          if (sc.gameState) {
-            setGameState(sc.gameState);
-            knownStatus = sc.gameState.status;
-            if (knownStatus === "announce-winner" || knownStatus === "game-ended") return;
-            continue;
-          }
-
-          return; // Unexpected shape — stop polling
-        } catch (err) {
-          if (abort.signal.aborted) return;
-          console.warn("[cards-ai] watch-game-state failed, retrying", err);
-          await new Promise((r) => setTimeout(r, 2000));
+    es.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as { gameState?: GameState };
+        if (data.gameState) {
+          setGameState(data.gameState);
         }
+      } catch {
+        // Ignore parse errors
       }
-    })();
+    };
 
-    return () => abort.abort();
-  }, [app, gameId]);
+    es.onerror = () => {
+      console.error("[cards-ai] SSE connection error");
+    };
+
+    return () => {
+      es.close();
+    };
+  }, [gameId]);
 
   return { gameState, gameId, app } as const;
 }
@@ -103,6 +80,10 @@ export default function App() {
   }
 
   return (
-  <PlayArea app={app} gameId={gameId} gameState={gameState} />
+    <PlayArea
+      app={app}
+      gameId={gameId}
+      gameState={gameState}
+    />
   );
 }

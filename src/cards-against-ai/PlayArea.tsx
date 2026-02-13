@@ -48,8 +48,16 @@ export function PlayArea(props: PlayAreaProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [bounds, setBounds] = useState<Bounds | null>(null);
   const pendingActionRef = useRef(false);
+  const [pendingPlayCardId, setPendingPlayCardId] = useState<string | null>(null);
+  const [pendingJudge, setPendingJudge] = useState(false);
   const previousPromptRef = useRef<string | null>(null);
   const answerCardsInPlay = useMemo(() => new Set<string>(), []);
+
+  // Clear pending states when game state updates
+  useEffect(() => {
+    setPendingPlayCardId(null);
+    setPendingJudge(false);
+  }, [gameState]);
 
   // --- ResizeObserver for container bounds ---
   useEffect(() => {
@@ -73,62 +81,77 @@ export function PlayArea(props: PlayAreaProps) {
     async (cardId: string, playerId: string) => {
       if (pendingActionRef.current || !app || !gameId) return;
       pendingActionRef.current = true;
+      setPendingPlayCardId(cardId);
       try {
-        await app.callServerTool({
+        const result = await app.callServerTool({
           name: "play-answer-card",
           arguments: { gameId, playerId, cardId },
         });
+        const sc = result?.structuredContent as
+          | { nextAction?: { action: string } | null; cpuContext?: unknown }
+          | undefined;
 
-        // TODO: Often the model doesn't trigger the next stage here,
-        // which should be to get the cards from the CPU and/or judge the cards.
-        // unfortunately, calling `sendMessage` here doesn't work and triggers
-        // a new MCP bridge operation, which corrupts the message tree.
+        // Only sendMessage when model needs to act (advance-cpu-turn)
+        if (sc?.nextAction?.action === "advance-cpu-turn") {
+          const cpuContextStr = sc.cpuContext
+            ? `\n\nCPU Context:\n${JSON.stringify(sc.cpuContext, null, 2)}`
+            : "";
+          await app.sendMessage({
+            role: "user",
+            content: [{
+              type: "text",
+              text: `I played answer card ${cardId}. Next action: advance-cpu-turn.${cpuContextStr}\n\nCall the advance-cpu-turn tool now.`,
+            }],
+          });
+        }
       } catch (err) {
         console.error("[cards-ai] playCard failed", err);
+        setPendingPlayCardId(null);
       } finally {
         pendingActionRef.current = false;
       }
     },
-    [app, gameId]
+    [app, gameId],
   );
 
   const judgeCard = useCallback(
     async (winningCardId: string, judgeId: string) => {
       if (pendingActionRef.current || !app || !gameId) return;
       pendingActionRef.current = true;
+      setPendingJudge(true);
       try {
         await app.callServerTool({
           name: "judge-answer-card",
           arguments: { gameId, playerId: judgeId, winningCardId },
         });
-
-        // TODO: Often the model doesn't trigger the next stage here,
-        // which should be to get the cards from the CPU and/or judge the cards.
-        // unfortunately, calling `sendMessage` here doesn't work and triggers
-        // a new MCP bridge operation, which corrupts the message tree.
+        // No sendMessage — SSE delivers state, nextAction is wait-for-next-round or game-over
       } catch (err) {
         console.error("[cards-ai] judgeCard failed", err);
+        setPendingJudge(false);
       } finally {
         pendingActionRef.current = false;
       }
     },
-    [app, gameId]
+    [app, gameId],
   );
 
   const nextRound = useCallback(async () => {
-    if (pendingActionRef.current || !app) return;
+    if (pendingActionRef.current || !app || !gameId) return;
     pendingActionRef.current = true;
     try {
       await app.sendMessage({
         role: "user",
-        content: [{ type: "text", text: "Next round, please." }],
+        content: [{
+          type: "text",
+          text: `I'm ready for the next round. Call the submit-prompt tool for gameId="${gameId}" with a new prompt and replacement answer cards.`,
+        }],
       });
     } catch (err) {
       console.error("[cards-ai] nextRound failed", err);
     } finally {
       pendingActionRef.current = false;
     }
-  }, [app]);
+  }, [app, gameId]);
 
   // --- Build positioned card elements ---
   const localPlayerId = gameState ? getLocalPlayerId(gameState) : null;
@@ -182,9 +205,11 @@ export function PlayArea(props: PlayAreaProps) {
     const localPlayerIsJudge =
       localPlayer.id ===
       gameState.players[gameState.currentJudgePlayerIndex].id;
-    const localPlayerHasPlayedACard = gameState.playedAnswerCards.some(
-      (played) => played.playerId === localPlayer.id
-    );
+    const localPlayerHasPlayedACard =
+      pendingPlayCardId !== null ||
+      gameState.playedAnswerCards.some(
+        (played) => played.playerId === localPlayer.id
+      );
 
     // Add played answer cards
     if (gameState.playedAnswerCards.length > 0) {
@@ -211,7 +236,7 @@ export function PlayArea(props: PlayAreaProps) {
               <AnswerCard
                 key={played.cardId}
                 cardId={played.cardId}
-                interactive={localPlayerIsJudge}
+                interactive={localPlayerIsJudge && !pendingJudge}
                 onClick={({ cardId }) => judgeCard(cardId, localPlayer.id)}
                 {...position}
                 faceUp={true}
@@ -283,7 +308,7 @@ export function PlayArea(props: PlayAreaProps) {
     }
 
     return elements;
-  }, [gameState, bounds, playCard, judgeCard]);
+  }, [gameState, bounds, playCard, judgeCard, pendingPlayCardId, pendingJudge]);
 
   if (!gameState) return null;
 

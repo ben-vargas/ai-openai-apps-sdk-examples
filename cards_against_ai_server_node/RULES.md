@@ -41,10 +41,10 @@ Every tool response includes:
 - `structuredContent.gameState`: The full current game state (plus `gameId` and `gameKey`)
 
 Use `nextAction.action` to determine the next step:
-- `"submit-cpu-answers"` — CPU players need to play cards
-- `"submit-cpu-judgement"` — CPU judge needs to pick a winner
+- `"advance-cpu-turn"` — CPU players need to play cards (and optionally judge). Use `advance-cpu-turn` tool.
 - `"human-answer-pending"` — Waiting for human to play a card
 - `"human-judge-pending"` — Waiting for human to judge
+- `"wait-for-next-round"` — Round complete, wait for human to click "Next Round"
 - `"submit-prompt"` — Submit a new prompt and replacement cards
 - `"game-over"` — Game has ended
 
@@ -104,39 +104,32 @@ Human judge picks the winning answer card.
 }
 ```
 
-### submit-cpu-answers
+### advance-cpu-turn
 
-Submit CPU player card selections.
+Submit CPU player card selections and optionally the CPU judge's verdict in one call.
+Read CPU persona details and card hands from `structuredContent.cpuContext` in the
+`play-answer-card` response.
 
 ```json
 {
   "gameId": "string",
-  "choices": [
+  "cpuAnswerChoices": [
     {
       "playerId": "string",
       "cardId": "string",
       "playerComment": "string"
     }
-  ]
+  ],
+  "cpuJudgement": {
+    "winningCardId": "string",
+    "reactionToWinningCard": "string"
+  }
 }
 ```
 
-**Response textContent**: Each CPU's quip as they play their card.
+`cpuJudgement` is optional — include it when the judge is also a CPU player.
 
-### submit-cpu-judgement
-
-Submit CPU judge's verdict.
-
-```json
-{
-  "gameId": "string",
-  "winningCardId": "string",
-  "reactionToWinningCard": "string"
-}
-```
-
-**Response textContent**: Dramatic announcement with winning card text, judge's
-reasoning, and winner name.
+**Response textContent**: CPU quips + judge announcement (if applicable).
 
 ### submit-prompt
 
@@ -155,10 +148,17 @@ Provides next round's prompt and replacement cards.
 }
 ```
 
+## Player Chatter
+
+After each CPU tool response, include cross-player banter in your chat message.
+Use the player personas from gameState to stay in character. 1-2 sentences per
+character, weaving reactions to the prompt, trash-talk, and commentary naturally
+into the narrative alongside card-play quips and judge announcements.
+
 ## TextContent Format
 
-All CPU tool responses include role-played textContent that ChatGPT should display
-to create an immersive experience:
+CPU tool responses include role-played textContent (quips/announcements)
+that ChatGPT should display to create an immersive experience:
 
 ```markdown
 **Brenda the Soccer Mom** slaps down a card:

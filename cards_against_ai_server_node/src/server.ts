@@ -190,10 +190,6 @@ const answerGuidanceMarkdown = readMarkdownFile(
 const toolUiMeta = {
   ui: {
     resourceUri: TEMPLATE_URI,
-    csp: {
-      connectDomains: widgetCspDomains.connectDomains,
-      resourceDomains: widgetCspDomains.resourceDomains,
-    },
   },
 };
 
@@ -247,21 +243,19 @@ const judgeAnswerCardShape = {
   winningCardId: z.string(),
 };
 
-const submitCpuAnswersShape = {
+const advanceCpuTurnShape = {
   gameId: z.string(),
-  choices: z.array(
+  cpuAnswerChoices: z.array(
     z.object({
       playerId: z.string(),
       cardId: z.string(),
       playerComment: z.string().optional(),
     }),
   ),
-};
-
-const submitCpuJudgementShape = {
-  gameId: z.string(),
-  winningCardId: z.string(),
-  reactionToWinningCard: z.string().optional(),
+  cpuJudgement: z.object({
+    winningCardId: z.string(),
+    reactionToWinningCard: z.string().optional(),
+  }).optional(),
 };
 
 const replacementCardParser = z.object({
@@ -277,38 +271,29 @@ const submitPromptShape = {
 
 // --- Game logic helpers ---
 
-const WATCH_TIMEOUT_MS = 45_000;
-
-function buildWatchResponse(
-  type: "change" | "timeout",
-  record: GameRecord,
-) {
-  const base = {
-    type,
-    invocation: "watch-game-state" as const,
-    gameId: record.id,
-    gameKey: record.key,
-  };
-
-  return {
-    content: [] as Array<{ type: "text"; text: string }>,
-    structuredContent: type === "change"
-      ? {
-          ...base,
-          gameState: record.instance.getState(),
-          nextAction: record.instance.computeNextAction(),
-        }
-      : base,
-  };
-}
-
 function buildGameToolResponse(
   toolName: string,
   record: GameRecord,
   textContent: string,
 ) {
   return {
-    content: textContent ? [{ type: "text" as const, text: textContent }] : [],
+    _meta: {
+      ...toolUiMeta,
+      "openai/widgetSessionId": record.id,
+    },
+    content: [
+      ...(textContent ? [{ type: "text" as const, text: textContent }] : []),
+      {
+        type: "text" as const,
+        text: JSON.stringify({
+          gameId: record.id,
+          gameKey: record.key,
+          gameState: record.instance.getState(),
+          nextAction: record.instance.computeNextAction(),
+        }),
+        annotations: { audience: ["assistant" as const] },
+      },
+    ],
     structuredContent: {
       invocation: toolName,
       gameId: record.id,
@@ -321,6 +306,7 @@ function buildGameToolResponse(
 
 function gameNotFoundError(toolName: string) {
   return {
+    _meta: toolUiMeta,
     isError: true as const,
     content: [{ type: "text" as const, text: "Unknown game id" }],
     structuredContent: {
@@ -343,38 +329,6 @@ function formatIntroDialog(introDialog: IntroDialogEntry[]): string {
     .join("\n\n");
 }
 
-function formatCpuContextForPlayAnswerCard(
-  cpuContext: ReturnType<GameInstance["getCpuContext"]>,
-): string {
-  const lines: string[] = ["Card played. Now it's the CPU players' turn."];
-
-  if (cpuContext.prompt) {
-    lines.push(`\n**Current prompt:** ${cpuContext.prompt.text}`);
-  }
-
-  for (const cpu of cpuContext.cpuPlayers) {
-    const persona = cpu.persona;
-    const personaDetails: string[] = [];
-    if (persona?.personality) personaDetails.push(`Personality: ${persona.personality}`);
-    if (persona?.likes?.length) personaDetails.push(`Likes: ${persona.likes.join(", ")}`);
-    if (persona?.dislikes?.length) personaDetails.push(`Dislikes: ${persona.dislikes.join(", ")}`);
-    if (persona?.humorStyle?.length) personaDetails.push(`Humor style: ${persona.humorStyle.join(", ")}`);
-    if (persona?.favoriteJokeTypes?.length) personaDetails.push(`Favorite joke types: ${persona.favoriteJokeTypes.join(", ")}`);
-
-    const cardsText = cpu.hand
-      .map((card) => `  - ${card.id}: "${card.text}"`)
-      .join("\n");
-
-    lines.push(
-      `\n**${cpu.name}** (${cpu.id}):\n${personaDetails.join("\n")}\nCards:\n${cardsText}`,
-    );
-  }
-
-  lines.push("\nCall `submit-cpu-answers` with each CPU player's card choice and an in-character quip.");
-
-  return lines.join("\n");
-}
-
 function formatCpuAnswerQuips(
   choices: Array<{ playerId: string; cardId: string; playerComment?: string }>,
   instance: GameInstance,
@@ -395,6 +349,16 @@ function formatCpuAnswerQuips(
   }
 
   return lines.join("\n\n");
+}
+
+// --- Logging helper ---
+
+function logToolCall(toolName: string, args: unknown, result: unknown) {
+  const timestamp = new Date().toISOString();
+  console.log(`\n[${timestamp}] ===== TOOL CALL: ${toolName} =====`);
+  console.log(`[${timestamp}] INPUT:`, JSON.stringify(args, null, 2));
+  console.log(`[${timestamp}] OUTPUT:`, JSON.stringify(result, null, 2));
+  console.log(`[${timestamp}] ===== END: ${toolName} =====\n`);
 }
 
 // --- Server creation ---
@@ -439,6 +403,14 @@ function createCardsAgainstAiServer(): McpServer {
           uri: TEMPLATE_URI,
           mimeType: RESOURCE_MIME_TYPE,
           text: widgetHtml,
+          _meta: {
+            ui: {
+              csp: {
+                connectDomains: widgetCspDomains.connectDomains,
+                resourceDomains: widgetCspDomains.resourceDomains,
+              },
+            },
+          },
         },
       ],
     }),
@@ -497,15 +469,18 @@ function createCardsAgainstAiServer(): McpServer {
     },
     async (args) => {
       if (!args.firstPrompt.includes("____")) {
-        return {
-          isError: true,
+        const result = {
+          _meta: toolUiMeta,
+          isError: true as const,
           content: [
             {
-              type: "text",
+              type: "text" as const,
               text: "firstPrompt must contain ____ (four underscores) for the blank.",
             },
           ],
         };
+        logToolCall("start-game", args, result);
+        return result;
       }
 
       const gameId = randomUUID();
@@ -526,7 +501,9 @@ function createCardsAgainstAiServer(): McpServer {
       gamesById.set(gameId, record);
 
       const introTextContent = formatIntroDialog(args.introDialog);
-      return buildGameToolResponse("start-game", record, introTextContent);
+      const result = buildGameToolResponse("start-game", record, introTextContent);
+      logToolCall("start-game", args, result);
+      return result;
     },
   );
 
@@ -536,19 +513,24 @@ function createCardsAgainstAiServer(): McpServer {
     {
       title: "Play an answer card",
       description:
-        "Plays an answer card from the human player's hand. The human will provide gameId, playerId, and cardId via chat. Returns updated gameState and nextAction.",
+        "Plays an answer card from the human player's hand. The human will provide gameId, playerId, and cardId via chat. Returns updated gameState and nextAction. If nextAction is 'advance-cpu-turn', immediately call advance-cpu-turn.",
       inputSchema: playAnswerCardShape,
       _meta: toolUiMeta,
       annotations: toolAnnotations,
     },
     async (args) => {
       const record = getGameRecord(args.gameId);
-      if (!record) return gameNotFoundError("play-answer-card");
+      if (!record) {
+        const result = gameNotFoundError("play-answer-card");
+        logToolCall("play-answer-card", args, result);
+        return result;
+      }
 
       try {
         record.instance.playAnswerCard(args.playerId, args.cardId);
       } catch (error) {
-        return {
+        const result = {
+          _meta: toolUiMeta,
           isError: true as const,
           content: [
             {
@@ -557,17 +539,44 @@ function createCardsAgainstAiServer(): McpServer {
             },
           ],
         };
+        logToolCall("play-answer-card", args, result);
+        return result;
       }
 
       const nextAction = record.instance.computeNextAction();
-      let textContent = "Card played.";
+      const cpuContext = nextAction?.action === "advance-cpu-turn"
+        ? record.instance.getCpuContext()
+        : undefined;
 
-      if (nextAction?.action === "submit-cpu-answers") {
-        const cpuContext = record.instance.getCpuContext();
-        textContent = formatCpuContextForPlayAnswerCard(cpuContext);
-      }
-
-      return buildGameToolResponse("play-answer-card", record, textContent);
+      const result = {
+        _meta: {
+          ...toolUiMeta,
+          "openai/widgetSessionId": record.id,
+        },
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              gameId: record.id,
+              gameKey: record.key,
+              gameState: record.instance.getState(),
+              nextAction,
+              ...(cpuContext ? { cpuContext } : {}),
+            }),
+            annotations: { audience: ["assistant" as const] },
+          },
+        ],
+        structuredContent: {
+          invocation: "play-answer-card",
+          gameId: record.id,
+          gameKey: record.key,
+          gameState: record.instance.getState(),
+          nextAction,
+          ...(cpuContext ? { cpuContext } : {}),
+        },
+      };
+      logToolCall("play-answer-card", args, result);
+      return result;
     },
   );
 
@@ -584,17 +593,24 @@ function createCardsAgainstAiServer(): McpServer {
     },
     async (args) => {
       const record = getGameRecord(args.gameId);
-      if (!record) return gameNotFoundError("judge-answer-card");
+      if (!record) {
+        const result = gameNotFoundError("judge-answer-card");
+        logToolCall("judge-answer-card", args, result);
+        return result;
+      }
 
       const state = record.instance.getState();
       const playedCard = state.playedAnswerCards.find(
         (played) => played.cardId === args.winningCardId,
       );
       if (!playedCard) {
-        return {
+        const result = {
+          _meta: toolUiMeta,
           isError: true as const,
           content: [{ type: "text" as const, text: "Winning card not found in played cards." }],
         };
+        logToolCall("judge-answer-card", args, result);
+        return result;
       }
 
       try {
@@ -604,7 +620,8 @@ function createCardsAgainstAiServer(): McpServer {
           winningPlayerId: playedCard.playerId,
         });
       } catch (error) {
-        return {
+        const result = {
+          _meta: toolUiMeta,
           isError: true as const,
           content: [
             {
@@ -613,103 +630,80 @@ function createCardsAgainstAiServer(): McpServer {
             },
           ],
         };
+        logToolCall("judge-answer-card", args, result);
+        return result;
       }
 
-      const stateAfter = record.instance.getState();
-      const winningCard = stateAfter.answerCards[args.winningCardId];
-      const winningPlayer = stateAfter.players.find(
-        (p) => p.id === playedCard.playerId,
-      );
-      const winnerName = winningPlayer?.persona?.name ?? "Someone";
-      const cardText = winningCard?.text ?? "???";
-      const textContent = `The human judge picks: "${cardText}"\n\n**${winnerName}** wins this round!`;
-
-      return buildGameToolResponse("judge-answer-card", record, textContent);
+      const result = buildGameToolResponse("judge-answer-card", record, "");
+      logToolCall("judge-answer-card", args, result);
+      return result;
     },
   );
 
   registerAppTool(
     server,
-    "submit-cpu-answers",
+    "advance-cpu-turn",
     {
-      title: "Submit CPU player answer card choices",
+      title: "Advance CPU turn (answers + optional judgement)",
       description:
-        "When nextAction.action === 'submit-cpu-answers', use this tool to provide card selections for all CPU players. Each choice needs a playerId, cardId (from that player's hand in the gameState), and an optional playerComment (a quip in character). Returns updated gameState and nextAction.",
-      inputSchema: submitCpuAnswersShape,
+        "When nextAction.action === 'advance-cpu-turn', use this tool to submit CPU player card selections and optionally the CPU judge's verdict in a single call. Provide cpuAnswerChoices with playerId, cardId, and optional playerComment for each CPU player. If the judge is also a CPU, include cpuJudgement with winningCardId and optional reactionToWinningCard. Read CPU persona details and card hands from structuredContent.cpuContext in the play-answer-card response. After receiving the response, include cross-player banter in your chat message — reactions to the prompt, trash-talk, or commentary. Use the player personas from gameState to stay in character. Returns updated gameState and nextAction.",
+      inputSchema: advanceCpuTurnShape,
       _meta: toolUiMeta,
       annotations: toolAnnotations,
     },
     async (args) => {
       const record = getGameRecord(args.gameId);
-      if (!record) return gameNotFoundError("submit-cpu-answers");
-
-      try {
-        record.instance.submitCpuAnswers(args.choices);
-      } catch (error) {
-        return {
-          isError: true as const,
-          content: [
-            {
-              type: "text" as const,
-              text: error instanceof Error ? error.message : "Failed to submit CPU answers.",
-            },
-          ],
-        };
+      if (!record) {
+        const result = gameNotFoundError("advance-cpu-turn");
+        logToolCall("advance-cpu-turn", args, result);
+        return result;
       }
-
-      const textContent = formatCpuAnswerQuips(args.choices, record.instance);
-      return buildGameToolResponse("submit-cpu-answers", record, textContent);
-    },
-  );
-
-  registerAppTool(
-    server,
-    "submit-cpu-judgement",
-    {
-      title: "Submit CPU judge verdict",
-      description:
-        "When nextAction.action === 'submit-cpu-judgement', the CPU judge picks a winner from the played answer cards in gameState. Provide winningCardId and optional reactionToWinningCard (1-2 sentences in the judge's voice). Returns updated gameState and nextAction.",
-      inputSchema: submitCpuJudgementShape,
-      _meta: toolUiMeta,
-      annotations: toolAnnotations,
-    },
-    async (args) => {
-      const record = getGameRecord(args.gameId);
-      if (!record) return gameNotFoundError("submit-cpu-judgement");
 
       const stateBefore = record.instance.getState();
       const judge = stateBefore.players[stateBefore.currentJudgePlayerIndex];
       const judgeName = judge?.persona?.name ?? "The Judge";
 
       try {
-        record.instance.submitCpuJudgement({
-          winningCardId: args.winningCardId,
-          reactionToWinningCard: args.reactionToWinningCard,
-        });
+        record.instance.advanceCpuTurn(args.cpuAnswerChoices, args.cpuJudgement);
       } catch (error) {
-        return {
+        const result = {
+          _meta: toolUiMeta,
           isError: true as const,
           content: [
             {
               type: "text" as const,
-              text: error instanceof Error ? error.message : "Failed to submit CPU judgement.",
+              text: error instanceof Error ? error.message : "Failed to advance CPU turn.",
             },
           ],
         };
+        logToolCall("advance-cpu-turn", args, result);
+        return result;
       }
 
-      const stateAfter = record.instance.getState();
-      const winningCard = stateAfter.answerCards[args.winningCardId];
-      const winningPlayer = stateAfter.players.find(
-        (p) => p.id === stateAfter.judgementResult?.winningPlayerId,
-      );
-      const winnerName = winningPlayer?.persona?.name ?? "Someone";
-      const cardText = winningCard?.text ?? "???";
+      const parts: string[] = [];
 
-      const reaction = args.reactionToWinningCard?.trim() ?? "This one wins!";
-      const textContent = `**${judgeName}** picks up a card and announces:\n\n"${cardText}"\n\n*${reaction}*\n\n**${winnerName}** wins this round!`;
+      // CPU answer quips
+      const answerQuips = formatCpuAnswerQuips(args.cpuAnswerChoices, record.instance);
+      if (answerQuips) {
+        parts.push(answerQuips);
+      }
 
-      return buildGameToolResponse("submit-cpu-judgement", record, textContent);
+      // CPU judgement announcement
+      if (args.cpuJudgement) {
+        const stateAfter = record.instance.getState();
+        const winningCard = stateAfter.answerCards[args.cpuJudgement.winningCardId];
+        const winningPlayer = stateAfter.players.find(
+          (p) => p.id === stateAfter.judgementResult?.winningPlayerId,
+        );
+        const winnerName = winningPlayer?.persona?.name ?? "Someone";
+        const cardText = winningCard?.text ?? "???";
+        const reaction = args.cpuJudgement.reactionToWinningCard?.trim() ?? "This one wins!";
+        parts.push(`**${judgeName}** picks up a card and announces:\n\n"${cardText}"\n\n*${reaction}*\n\n**${winnerName}** wins this round!`);
+      }
+
+      const result = buildGameToolResponse("advance-cpu-turn", record, parts.join("\n\n---\n\n"));
+      logToolCall("advance-cpu-turn", args, result);
+      return result;
     },
   );
 
@@ -719,31 +713,39 @@ function createCardsAgainstAiServer(): McpServer {
     {
       title: "Submit a prompt card for the round",
       description:
-        "When nextAction.action === 'submit-prompt', provide a new prompt card and replacement answer cards. The promptText must include exactly one blank (____). The replacementCards array should include one new answer card for each player who played last round (not the judge). Returns updated gameState and nextAction.",
+        "When nextAction.action === 'submit-prompt', provide a new prompt card and replacement answer cards. The promptText must include exactly one blank (____). The replacementCards array should include one new answer card for each player who played last round (not the judge). After receiving the response, include between-round banter in your chat message — reactions to the last round, smack-talk, or hype for the next round. Use the player personas from gameState to stay in character. Returns updated gameState and nextAction.",
       inputSchema: submitPromptShape,
       _meta: toolUiMeta,
       annotations: toolAnnotations,
     },
     async (args) => {
       const record = getGameRecord(args.gameId);
-      if (!record) return gameNotFoundError("submit-prompt");
+      if (!record) {
+        const result = gameNotFoundError("submit-prompt");
+        logToolCall("submit-prompt", args, result);
+        return result;
+      }
 
       if (!args.promptText.includes("____")) {
-        return {
-          isError: true,
+        const result = {
+          _meta: toolUiMeta,
+          isError: true as const,
           content: [
             {
-              type: "text",
+              type: "text" as const,
               text: "promptText must contain ____ (four underscores) for the blank.",
             },
           ],
         };
+        logToolCall("submit-prompt", args, result);
+        return result;
       }
 
       try {
         record.instance.submitPrompt(args.promptText, args.replacementCards);
       } catch (error) {
-        return {
+        const result = {
+          _meta: toolUiMeta,
           isError: true as const,
           content: [
             {
@@ -752,57 +754,13 @@ function createCardsAgainstAiServer(): McpServer {
             },
           ],
         };
+        logToolCall("submit-prompt", args, result);
+        return result;
       }
 
-      return buildGameToolResponse("submit-prompt", record, "New round started!");
-    },
-  );
-
-  // App-only tool: hidden from LLM, callable by the widget to wait for state changes.
-  // Holds the response until the game state changes or a 45s timeout elapses.
-  registerAppTool(
-    server,
-    "watch-game-state",
-    {
-      title: "Watch for game state changes",
-      description:
-        "Holds the response until the game state changes from knownStatus or a timeout elapses. Returns { type: 'change' | 'timeout' } in structuredContent.",
-      inputSchema: {
-        gameId: z.string(),
-        knownStatus: z.string(),
-      },
-      _meta: {
-        ui: {
-          resourceUri: TEMPLATE_URI,
-          visibility: ["app"],
-          csp: {
-            connectDomains: widgetCspDomains.connectDomains,
-            resourceDomains: widgetCspDomains.resourceDomains,
-          },
-        },
-      },
-      annotations: {
-        ...toolAnnotations,
-        readOnlyHint: true as const,
-      },
-    },
-    async (args) => {
-      const record = getGameRecord(args.gameId);
-      if (!record) return gameNotFoundError("watch-game-state");
-
-      // If state already differs from what the widget knows, return immediately
-      const currentStatus = record.instance.getState().status;
-      if (currentStatus !== args.knownStatus) {
-        return buildWatchResponse("change", record);
-      }
-
-      // Wait for a state change or 45s timeout
-      const timeout = AbortSignal.timeout(WATCH_TIMEOUT_MS);
-      await record.instance.waitForChange(timeout);
-
-      // If timeout aborted the signal, no change occurred
-      const type = timeout.aborted ? "timeout" : "change";
-      return buildWatchResponse(type, record);
+      const result = buildGameToolResponse("submit-prompt", record, "");
+      logToolCall("submit-prompt", args, result);
+      return result;
     },
   );
 
@@ -850,6 +808,41 @@ app.get("/mcp", async (req, res) => {
 
 app.delete("/mcp", async (_req, res) => {
   res.status(405).end();
+});
+
+// --- SSE: push game state to widget on every change ---
+
+app.get("/mcp/game/:gameId/state-stream", (req, res) => {
+  const record = getGameRecord(req.params.gameId);
+  if (!record) {
+    res.status(404).json({ error: "Game not found" });
+    return;
+  }
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "Access-Control-Allow-Origin": "*",
+  });
+
+  const sendState = () => {
+    const data = JSON.stringify({
+      gameState: record.instance.getState(),
+      nextAction: record.instance.computeNextAction(),
+    });
+    res.write(`data: ${data}\n\n`);
+  };
+
+  // Send current state immediately
+  sendState();
+
+  // Push on every change
+  record.instance.on("change", sendState);
+
+  req.on("close", () => {
+    record.instance.removeListener("change", sendState);
+  });
 });
 
 app.listen(port, () => {

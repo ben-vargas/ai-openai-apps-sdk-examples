@@ -4,72 +4,45 @@
 
 Uses `@modelcontextprotocol/ext-apps` — widget communicates via `postMessage` (JSON-RPC), not `window.openai` globals.
 
-**Critical constraint**: `ontoolresult` fires **once per widget lifecycle**. Subsequent LLM tool calls create new widget instances — the existing widget never receives those updates. The widget uses `watch-game-state` long-polling as its primary state update mechanism.
+## Data Channels
+
+Hybrid approach — two mechanisms for widget→server communication, plus SSE for state delivery:
+
+1. **`callServerTool`** — direct tool calls that bypass the model. Used for `play-answer-card` and `judge-answer-card`. No confirmation dialog, instant execution.
+2. **`sendMessage`** — routes through the model. Used when the model must generate content: `advance-cpu-turn` (after play-answer-card returns that nextAction), `submit-prompt` (next round).
+3. **SSE** (`/mcp/game/:gameId/state-stream`) — server pushes full `gameState` on every state change. Single `EventSource` per game, opened when `gameId` is known.
+
+`ontoolresult` is kept solely for bootstrapping: it delivers the initial `gameId` from `start-game`, which opens the SSE connection.
+
+All tool responses include `_meta["openai/widgetSessionId"]` = gameId.
 
 ## Game Loop
 
 ```
-Human clicks card
-  → widget calls app.sendMessage() with card IDs embedded in text
-  → LLM calls play-answer-card / judge-answer-card on the server
-  → widget picks up state change via watch-game-state long-poll
-  → if nextAction is LLM-dependent:
-    → LLM continues calling tools (submit-cpu-answers, submit-cpu-judgement, submit-prompt)
-    → widget watches via watch-game-state until nextAction is human-pending or game-over
-  → on timeout: retries immediately
-```
+Human clicks answer card
+  → widget calls callServerTool("play-answer-card") → server updates state → SSE pushes
+  → if nextAction is advance-cpu-turn: widget sends sendMessage → LLM calls advance-cpu-turn → SSE pushes
+  → if nextAction is human-judge-pending: widget shows judge UI (via SSE state)
 
-## State Flow
+Human judges card
+  → widget calls callServerTool("judge-answer-card") → server updates state → SSE pushes
+  → no model involvement needed
 
-```
-Server (GameInstance)
-  → MCP tool response:
-      structuredContent: { gameState, gameId, gameKey, nextAction }
-  → Initial render: ontoolresult fires once with structuredContent
-  → All actions (human + LLM): widget long-polls via watch-game-state to pick up changes
-  → updateToolResultData() pushes new state into McpAppProvider
-  → Optimistic updates via localOverride in GameManagementProvider
+Human clicks "Next Round"
+  → widget sends sendMessage("Call submit-prompt for gameId=...")
+  → LLM calls submit-prompt → server updates state → SSE pushes
 ```
 
 ## MCP Tools
 
-| Tool | Initiator | Visibility | Purpose |
-|------|-----------|------------|---------|
-| `start-game` | LLM | model+app | Create game with players, cards, first prompt |
-| `join-game` | Widget | model+app | Human joins an existing game |
-| `play-answer-card` | LLM (on human behalf) | model+app | Human plays a card from hand |
-| `judge-answer-card` | LLM (on human behalf) | model+app | Human judge picks winner |
-| `submit-cpu-answers` | LLM | model+app | CPU players choose and play cards |
-| `submit-cpu-judgement` | LLM | model+app | CPU judge picks winner |
-| `submit-prompt` | LLM | model+app | New prompt + replacement cards for next round |
-| `watch-game-state` | Widget | **app-only** | Long-poll for state changes after LLM actions |
-
-## Watch Strategy
-
-The widget continuously long-polls via `watch-game-state` whenever the game needs LLM action:
-
-1. Human clicks a card → widget sends `app.sendMessage()` with card IDs
-2. Widget calls `watch-game-state` with the current `knownStatus`
-3. Server holds response up to 45s via `GameInstance.waitForChange()`
-4. Response includes `{ type: "change" }` or `{ type: "timeout" }`
-5. On `"change"`: updates state, checks `nextAction`, continues watching if still LLM-dependent
-6. On `"timeout"`: retries immediately (state may have changed during timeout window)
-7. Widget-side timeout set to 55s (above server's 45s hold) to avoid premature abort
-8. If human-pending or game-over: stops, waits for user interaction
-
-## PiP Card Management
-
-`pip-card-management.tsx` uses a reducer to manage card positions with animation states:
-
-- **entering**: Card starts at dealer spot, animates to target position, flips face-up after delay
-- **active**: Card at final position
-- **exiting**: Card animates to dealer spot, removed on transition end
-
-`buildPipCardStateMap()` computes target positions from game state:
-- Prompt card: top center
-- Played cards: bottom center row (face-down during `waiting-for-answers`, face-up during `judging`/`display-judgement`)
-- Hand cards: bottom center fan (shown until local player has played, hidden for judge)
+| Tool | Initiator | Purpose |
+|------|-----------|---------|
+| `start-game` | LLM | Create game with players, cards, first prompt |
+| `play-answer-card` | Widget (callServerTool) | Human plays a card (idempotent) |
+| `judge-answer-card` | Widget (callServerTool) | Human judge picks winner (idempotent) |
+| `advance-cpu-turn` | LLM (via sendMessage) | CPU answers + optional CPU judgement (single call) |
+| `submit-prompt` | LLM (via sendMessage) | New prompt + replacement cards for next round |
 
 ## CPU Dialog
 
-CPU tool responses include formatted textContent (e.g. character quips when playing cards, judge announcements). ChatGPT presents this naturally in the chat stream — the characters "speak" through model narration.
+CPU tool responses include formatted textContent (e.g. character quips when playing cards, judge announcements). ChatGPT presents this naturally in the chat stream.
