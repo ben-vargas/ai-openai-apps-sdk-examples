@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import {
   AnswerCard,
+  ChatMessage,
   GameState,
   JudgementResult,
   NextActionHint,
@@ -55,6 +56,11 @@ interface PlayerPlayedAnswerCardAction {
   playerComment?: string;
 }
 
+interface PostBanterAction {
+  type: "POST_BANTER";
+  messages: ChatMessage[];
+}
+
 type GameAction =
   | InitializeNewGameAction
   | DealReplacementCardsAction
@@ -63,7 +69,8 @@ type GameAction =
   | PromptReceivedAction
   | PrepareForNextRoundAction
   | AnnounceWinnerAction
-  | PlayerPlayedAnswerCardAction;
+  | PlayerPlayedAnswerCardAction
+  | PostBanterAction;
 
 interface PlayerInput {
   id: string;
@@ -94,6 +101,7 @@ export class GameInstance extends EventEmitter {
     discardedPromptCards: [],
     judgementResult: null,
     winnerId: null,
+    chatLog: [],
   };
 
   constructor(options: GameInstanceOptions) {
@@ -177,6 +185,11 @@ export class GameInstance extends EventEmitter {
    * Submit CPU answer card choices from ChatGPT.
    */
   submitCpuAnswers(choices: Array<{ playerId: string; cardId: string; playerComment?: string }>) {
+    if (this.state.status !== "waiting-for-answers") {
+      throw new Error(
+        `Cannot submit CPU answers while game is ${this.state.status}`,
+      );
+    }
     const judge = this.state.players[this.state.currentJudgePlayerIndex];
     const cpuPlayers = this.state.players.filter(
       (player) => player.type === "cpu" && player.id !== judge?.id,
@@ -212,6 +225,11 @@ export class GameInstance extends EventEmitter {
    * Submit CPU judgement from ChatGPT.
    */
   submitCpuJudgement(result: { winningCardId: string; reactionToWinningCard?: string }) {
+    if (this.state.status !== "judging") {
+      throw new Error(
+        `Cannot submit CPU judgement while game is ${this.state.status}`,
+      );
+    }
     const playedAnswerCards = this.state.playedAnswerCards;
 
     let winningCardId = result.winningCardId;
@@ -242,34 +260,27 @@ export class GameInstance extends EventEmitter {
   }
 
   /**
-   * Single consolidated tool: submit CPU answers AND optionally CPU judgement in one call.
-   * Reduces sequential tool calls from 2-3 to 1, preventing concurrent widget crashes.
-   */
-  advanceCpuTurn(
-    cpuAnswerChoices: Array<{ playerId: string; cardId: string; playerComment?: string }>,
-    cpuJudgement?: { winningCardId: string; reactionToWinningCard?: string },
-  ) {
-    this.submitCpuAnswers(cpuAnswerChoices);
-
-    if (cpuJudgement && this.state.status === "judging") {
-      const judge = this.state.players[this.state.currentJudgePlayerIndex];
-      if (judge?.type === "cpu") {
-        this.submitCpuJudgement(cpuJudgement);
-      }
-    }
-  }
-
-  /**
    * Submit a prompt card from ChatGPT along with replacement cards.
    * Internally calls prepareForNextRound first, then sets the new prompt.
    */
   submitPrompt(promptText: string, replacementCards?: Array<{ playerId: string; card: AnswerCard }>) {
+    if (this.state.status !== "display-judgement" && this.state.status !== "prepare-for-next-round") {
+      throw new Error(
+        `Cannot submit prompt while game is ${this.state.status}. Check nextAction for the correct tool to call.`,
+      );
+    }
     // Prepare for next round (clear played cards, rotate judge, etc.)
     this.dispatchAction({ type: "PREPARE_FOR_NEXT_ROUND" });
 
-    // Deal replacement cards before setting new prompt
+    // Deal replacement cards only to players who actually played (hand < 7 cards)
     if (replacementCards && replacementCards.length > 0) {
-      this.dispatchAction({ type: "DEAL_REPLACEMENT_CARDS", replacementCards });
+      const filtered = replacementCards.filter((rc) => {
+        const player = this.state.players.find((p) => p.id === rc.playerId);
+        return player && player.answerCards.length < 7;
+      });
+      if (filtered.length > 0) {
+        this.dispatchAction({ type: "DEAL_REPLACEMENT_CARDS", replacementCards: filtered });
+      }
     }
 
     const prompt: PromptCard = {
@@ -278,6 +289,13 @@ export class GameInstance extends EventEmitter {
       text: promptText.trim(),
     };
     this.dispatchAction({ type: "PROMPT_RECEIVED", prompt });
+  }
+
+  /**
+   * Append banter messages to the chat log.
+   */
+  addBanter(messages: ChatMessage[]) {
+    this.dispatchAction({ type: "POST_BANTER", messages });
   }
 
   /**
@@ -337,6 +355,7 @@ export class GameInstance extends EventEmitter {
       return {
         action: "game-over",
         description: `Game over! ${winner?.persona?.name ?? "Someone"} wins with ${winner?.wonPromptCards.length ?? 0} points.`,
+        notifyModel: false,
       };
     }
 
@@ -353,10 +372,11 @@ export class GameInstance extends EventEmitter {
         return {
           action: "human-answer-pending",
           description: "Waiting for the human player to play an answer card.",
+          notifyModel: false,
         };
       }
 
-      // CPU players need to play (and possibly judge) — single consolidated action
+      // CPU players need to play
       const cpuPlayersWhoNeedToPlay = players.filter(
         (p) =>
           p.type === "cpu" &&
@@ -365,11 +385,13 @@ export class GameInstance extends EventEmitter {
       );
 
       if (cpuPlayersWhoNeedToPlay.length > 0) {
-        const judgeIsCpu = judge?.type === "cpu";
-        return {
-          action: "advance-cpu-turn",
-          description: `CPU players need to play answer cards.${judgeIsCpu ? ` ${judge.persona?.name ?? "CPU judge"} will also judge.` : ""} Use the advance-cpu-turn tool.`,
-        };
+        const judgeIsHuman = judge?.type === "human";
+        let description = "CPU players need to play answer cards.";
+        if (judgeIsHuman) {
+          description += " The human player is the judge this round — do NOT mention their hand cards. They will judge in the widget after cards are played.";
+        }
+        description += " Use the play-cpu-answer-cards tool now.";
+        return { action: "play-cpu-answer-cards", description, notifyModel: true };
       }
 
       return null;
@@ -378,14 +400,16 @@ export class GameInstance extends EventEmitter {
     if (status === "judging") {
       if (judge?.type === "cpu") {
         return {
-          action: "advance-cpu-turn",
-          description: `${judge.persona?.name ?? "CPU judge"} needs to pick the winning card. Use the advance-cpu-turn tool with cpuJudgement only (no cpuAnswerChoices needed).`,
+          action: "cpu-judge-answer-card",
+          description: `${judge.persona?.name ?? "CPU judge"} needs to pick the winning card. Use the cpu-judge-answer-card tool now.`,
+          notifyModel: true,
         };
       }
 
       return {
         action: "human-judge-pending",
         description: "Waiting for the human player to judge the cards.",
+        notifyModel: false,
       };
     }
 
@@ -396,12 +420,14 @@ export class GameInstance extends EventEmitter {
         return {
           action: "game-over",
           description: `${winner.persona?.name ?? "Someone"} has won the game with ${winner.wonPromptCards.length} points!`,
+          notifyModel: false,
         };
       }
 
       return {
         action: "wait-for-next-round",
         description: "Round complete. Wait for the human to click 'Next Round' before submitting a new prompt.",
+        notifyModel: false,
       };
     }
 
@@ -409,6 +435,7 @@ export class GameInstance extends EventEmitter {
       return {
         action: "submit-prompt",
         description: "Submit a new prompt card and replacement answer cards for the next round.",
+        notifyModel: false,
       };
     }
 
@@ -578,6 +605,12 @@ export class GameInstance extends EventEmitter {
                 }
               : player,
           ),
+        };
+      }
+      case "POST_BANTER": {
+        return {
+          ...prevState,
+          chatLog: [...prevState.chatLog, ...action.messages],
         };
       }
       default: {

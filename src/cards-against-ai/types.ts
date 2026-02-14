@@ -18,6 +18,11 @@ export interface Persona {
   dislikes: string[];
   humorStyle: string[];
   favoriteJokeTypes: string[];
+  catchphrase?: string;
+  quirks?: string[];
+  backstory?: string;
+  voiceTone?: string;
+  competitiveness?: number;
 }
 
 export interface Player {
@@ -53,14 +58,18 @@ export interface JudgementResult {
   reactionToWinningCard?: string;
 }
 
-export type NextActionHint =
-  | { action: "advance-cpu-turn"; description: string }
-  | { action: "human-judge-pending"; description: string }
-  | { action: "human-answer-pending"; description: string }
-  | { action: "wait-for-next-round"; description: string }
-  | { action: "submit-prompt"; description: string }
-  | { action: "game-over"; description: string }
-  | null;
+export type NextActionHint = {
+  action: string;
+  description: string;
+  /** When true, widget should sendMessage after callServerTool so the model acts next */
+  notifyModel: boolean;
+} | null;
+
+export interface ChatMessage {
+  playerId: string;
+  playerName: string;
+  message: string;
+}
 
 export interface IntroDialogEntry {
   playerId: string;
@@ -79,4 +88,5 @@ export interface GameState {
   answerCards: Record<string, AnswerCard>;
   discardedPromptCards: PromptCard[];
   judgementResult: JudgementResult | null;
+  chatLog: ChatMessage[];
 }

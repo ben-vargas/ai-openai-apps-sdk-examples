@@ -77,33 +77,49 @@ export function PlayArea(props: PlayAreaProps) {
 
   // --- Human action handlers ---
 
+  /** After a callServerTool, notify the model if nextAction.notifyModel is true. */
+  const callToolAndNotify = useCallback(
+    async (
+      toolName: string,
+      args: Record<string, unknown>,
+      humanActionSummary: string,
+    ) => {
+      if (!app) return;
+      const result = await app.callServerTool({
+        name: toolName,
+        arguments: args,
+      });
+      const sc = result?.structuredContent as
+        | { nextAction?: { notifyModel?: boolean; description?: string } | null; cpuContext?: unknown }
+        | undefined;
+
+      if (sc?.nextAction?.notifyModel) {
+        const cpuContextStr = sc.cpuContext
+          ? `\n\nCPU Context:\n${JSON.stringify(sc.cpuContext, null, 2)}`
+          : "";
+        await app.sendMessage({
+          role: "user",
+          content: [{
+            type: "text",
+            text: `${humanActionSummary}\n\n${sc.nextAction.description}${cpuContextStr}`,
+          }],
+        });
+      }
+    },
+    [app],
+  );
+
   const playCard = useCallback(
     async (cardId: string, playerId: string) => {
       if (pendingActionRef.current || !app || !gameId) return;
       pendingActionRef.current = true;
       setPendingPlayCardId(cardId);
       try {
-        const result = await app.callServerTool({
-          name: "play-answer-card",
-          arguments: { gameId, playerId, cardId },
-        });
-        const sc = result?.structuredContent as
-          | { nextAction?: { action: string } | null; cpuContext?: unknown }
-          | undefined;
-
-        // Only sendMessage when model needs to act (advance-cpu-turn)
-        if (sc?.nextAction?.action === "advance-cpu-turn") {
-          const cpuContextStr = sc.cpuContext
-            ? `\n\nCPU Context:\n${JSON.stringify(sc.cpuContext, null, 2)}`
-            : "";
-          await app.sendMessage({
-            role: "user",
-            content: [{
-              type: "text",
-              text: `I played answer card ${cardId}. Next action: advance-cpu-turn.${cpuContextStr}\n\nCall the advance-cpu-turn tool now.`,
-            }],
-          });
-        }
+        await callToolAndNotify(
+          "play-answer-card",
+          { gameId, playerId, cardId },
+          `I played answer card ${cardId}.`,
+        );
       } catch (err) {
         console.error("[cards-ai] playCard failed", err);
         setPendingPlayCardId(null);
@@ -111,7 +127,7 @@ export function PlayArea(props: PlayAreaProps) {
         pendingActionRef.current = false;
       }
     },
-    [app, gameId],
+    [app, gameId, callToolAndNotify],
   );
 
   const judgeCard = useCallback(
@@ -120,11 +136,11 @@ export function PlayArea(props: PlayAreaProps) {
       pendingActionRef.current = true;
       setPendingJudge(true);
       try {
-        await app.callServerTool({
-          name: "judge-answer-card",
-          arguments: { gameId, playerId: judgeId, winningCardId },
-        });
-        // No sendMessage — SSE delivers state, nextAction is wait-for-next-round or game-over
+        await callToolAndNotify(
+          "judge-answer-card",
+          { gameId, playerId: judgeId, winningCardId },
+          `I judged card ${winningCardId} as the winner.`,
+        );
       } catch (err) {
         console.error("[cards-ai] judgeCard failed", err);
         setPendingJudge(false);
@@ -132,7 +148,7 @@ export function PlayArea(props: PlayAreaProps) {
         pendingActionRef.current = false;
       }
     },
-    [app, gameId],
+    [app, gameId, callToolAndNotify],
   );
 
   const nextRound = useCallback(async () => {
@@ -237,6 +253,10 @@ export function PlayArea(props: PlayAreaProps) {
                 key={played.cardId}
                 cardId={played.cardId}
                 interactive={localPlayerIsJudge && !pendingJudge}
+                highlighted={
+                  gameState.judgementResult?.winningCardId === played.cardId &&
+                  (gameState.status === "display-judgement" || gameState.status === "announce-winner")
+                }
                 onClick={({ cardId }) => judgeCard(cardId, localPlayer.id)}
                 {...position}
                 faceUp={true}
@@ -336,19 +356,24 @@ export function PlayArea(props: PlayAreaProps) {
       </div>
       {status === "display-judgement" && (
         <button
-          className="absolute bottom-4 right-4 z-20 rounded-lg bg-emerald-500 px-5 py-2.5 text-lg font-bold text-white shadow-lg transition-colors hover:bg-emerald-400 active:bg-emerald-600"
+          className="absolute bottom-4 right-4 z-20 rounded-lg border border-white/80 bg-white/15 px-5 py-2.5 text-lg font-bold text-white shadow-lg backdrop-blur-md transition-colors hover:bg-white/25 active:bg-white/35"
           onClick={nextRound}
         >
           Next Round &rarr;
         </button>
       )}
       {winner && (
-        <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/60">
-          <div className="rounded-2xl bg-white px-8 py-6 text-center shadow-2xl">
-            <h2 className="text-2xl font-extrabold text-slate-900">
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/60 backdrop-blur-lg">
+          <div
+            className="cards-ai-winner-panel rounded-2xl border-2 border-amber-400/80 bg-slate-900/85 px-10 py-8 text-center shadow-2xl"
+          >
+            <h2
+              className="text-5xl font-black text-white"
+              style={{ textShadow: "0 0 20px rgba(251,191,36,0.7), 0 2px 4px rgba(0,0,0,0.5)" }}
+            >
               {winner.persona?.name ?? "Player"} Wins!
             </h2>
-            <p className="mt-1 text-sm text-slate-500">
+            <p className="mt-3 text-lg font-semibold text-amber-300">
               {winner.wonPromptCards.length} point
               {winner.wonPromptCards.length !== 1 ? "s" : ""}
             </p>

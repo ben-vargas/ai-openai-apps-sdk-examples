@@ -34,6 +34,13 @@ the prompt on the black card.
    - New prompt card text
    - Replacement answer cards (1 per player who played last round)
 
+## Human as Judge
+
+When the human player is the judge for a round:
+- Do NOT mention the human's hand cards — they only judge, they don't play.
+- Replacement cards go only to players who played last round. The judge did not play and must NOT receive one.
+- When `nextAction` is `play-cpu-answer-cards` after `submit-prompt`, call it immediately using the `cpuContext` from the response.
+
 ## Tool Response Format
 
 Every tool response includes:
@@ -41,12 +48,15 @@ Every tool response includes:
 - `structuredContent.gameState`: The full current game state (plus `gameId` and `gameKey`)
 
 Use `nextAction.action` to determine the next step:
-- `"advance-cpu-turn"` — CPU players need to play cards (and optionally judge). Use `advance-cpu-turn` tool.
+- `"play-cpu-answer-cards"` — CPU players need to play cards. Use `play-cpu-answer-cards` tool.
+- `"cpu-judge-answer-card"` — CPU judge needs to pick the winner. Use `cpu-judge-answer-card` tool.
 - `"human-answer-pending"` — Waiting for human to play a card
 - `"human-judge-pending"` — Waiting for human to judge
 - `"wait-for-next-round"` — Round complete, wait for human to click "Next Round"
 - `"submit-prompt"` — Submit a new prompt and replacement cards
 - `"game-over"` — Game has ended
+
+`nextAction.notifyModel` indicates whether the widget will automatically route the action through the model.
 
 ## MCP Tool Schemas
 
@@ -104,11 +114,10 @@ Human judge picks the winning answer card.
 }
 ```
 
-### advance-cpu-turn
+### play-cpu-answer-cards
 
-Submit CPU player card selections and optionally the CPU judge's verdict in one call.
-Read CPU persona details and card hands from `structuredContent.cpuContext` in the
-`play-answer-card` response.
+Submit CPU player card selections. Read CPU persona details and card hands from
+`structuredContent.cpuContext` in the previous response.
 
 ```json
 {
@@ -119,17 +128,25 @@ Read CPU persona details and card hands from `structuredContent.cpuContext` in t
       "cardId": "string",
       "playerComment": "string"
     }
-  ],
-  "cpuJudgement": {
-    "winningCardId": "string",
-    "reactionToWinningCard": "string"
-  }
+  ]
 }
 ```
 
-`cpuJudgement` is optional — include it when the judge is also a CPU player.
+**Response textContent**: CPU quips. If `nextAction` is `cpu-judge-answer-card`, call that tool immediately.
 
-**Response textContent**: CPU quips + judge announcement (if applicable).
+### cpu-judge-answer-card
+
+Submit the CPU judge's verdict. Read the played answer cards from `structuredContent.cpuContext`.
+
+```json
+{
+  "gameId": "string",
+  "winningCardId": "string",
+  "reactionToWinningCard": "string"
+}
+```
+
+**Response textContent**: Judge announcement.
 
 ### submit-prompt
 
@@ -148,12 +165,35 @@ Provides next round's prompt and replacement cards.
 }
 ```
 
-## Player Chatter
+## Player Banter (`post-banter` tool)
 
-After each CPU tool response, include cross-player banter in your chat message.
-Use the player personas from gameState to stay in character. 1-2 sentences per
-character, weaving reactions to the prompt, trash-talk, and commentary naturally
-into the narrative alongside card-play quips and judge announcements.
+After every game action tool, call `post-banter` to generate cross-player banter that appears in the ChatGPT conversation.
+
+### When to Call
+
+- **After `play-cpu-answer-cards`**: Reactions to the prompt, smack-talk about card choices
+- **After `cpu-judge-answer-card`**: Other players reacting to the verdict — groans, celebrations, accusations of favoritism
+- **After `submit-prompt`**: Between-round chatter — hype for the next round, rehashing last round
+- **When user addresses a CPU player**: That player responds and 0-1 others chime in
+
+### Style
+
+- 1-2 sentences per speaking character
+- Use persona fields (personality, humorStyle, catchphrase, quirks, voiceTone, competitiveness) for voice consistency
+- ~70% game-focused reactions, ~30% personality tangents
+- Cross-player interactions — players should reference *each other*, not just comment in isolation
+- Competitive players (high competitiveness) trash-talk more; laid-back players deflect
+
+### Formatting
+
+```
+**Name**: "dialog"
+**Name** *action*: "dialog"
+```
+
+### Variation
+
+Not every exchange needs all 3 CPUs. 1-2 speakers is fine. Silence, eye-rolls, and nods are valid. Vary who speaks each round.
 
 ## TextContent Format
 
@@ -178,7 +218,12 @@ that ChatGPT should display to create an immersive experience:
   "likes": ["string"],
   "dislikes": ["string"],
   "humorStyle": ["string"],
-  "favoriteJokeTypes": ["string"]
+  "favoriteJokeTypes": ["string"],
+  "catchphrase": "string (optional — signature phrase)",
+  "quirks": ["string (optional — behavioral tics)"],
+  "backstory": "string (optional — 1-2 sentence background)",
+  "voiceTone": "string (optional — e.g. 'sarcastic', 'deadpan')",
+  "competitiveness": "number 1-10 (optional — trash-talk intensity)"
 }
 ```
 

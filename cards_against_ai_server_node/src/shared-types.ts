@@ -1,5 +1,6 @@
 export type {
   AnswerCard,
+  ChatMessage,
   GameState,
   IntroDialogEntry,
   JudgementResult,
