@@ -58,6 +58,13 @@ export interface JudgementResult {
   reactionToWinningCard?: string;
 }
 
+/**
+ * Routing signal from server to widget.
+ * `notifyModel` is the key flag: when true, the widget should follow a
+ * callServerTool response with a sendMessage so the model continues the
+ * game loop (e.g. play CPU answer cards, CPU judge picks winner).
+ * When false, the widget just waits for the next human action.
+ */
 export type NextActionHint = {
   action: string;
   description: string;

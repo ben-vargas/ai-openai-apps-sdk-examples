@@ -44,6 +44,7 @@ Human clicks "Next Round"
 | `play-cpu-answer-cards` | LLM (via sendMessage) | CPU players play their answer cards |
 | `cpu-judge-answer-card` | LLM (via sendMessage) | CPU judge picks the winning card |
 | `submit-prompt` | LLM (via sendMessage) | New prompt + replacement cards for next round |
+| `post-banter` | LLM | In-character dialog from CPU players (chat flavor, no game state change) |
 
 ## Human as Judge
 

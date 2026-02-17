@@ -12,6 +12,8 @@ import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+// ext-apps wrappers that add MCP Apps metadata (widget UI binding, CSP
+// configuration) automatically when registering tools and resources.
 import {
   registerAppTool,
   registerAppResource,
@@ -35,6 +37,8 @@ interface GameRecord {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, "..", "..");
 const ASSETS_DIR = path.resolve(ROOT_DIR, "assets");
+// `ui://widget/...` tells ChatGPT which widget HTML to render in the iframe.
+// `rules://` URIs are context documents the model reads before acting.
 const TEMPLATE_URI = "ui://widget/cards-against-ai.html";
 const RULES_URI = "rules://cards-against-ai";
 const ANSWER_GUIDANCE_URI = "rules://cards-against-ai/answer-deck";
@@ -66,6 +70,8 @@ const API_BASE_URL = normalizeBaseUrl(
 );
 const API_BASE_ORIGIN = parseOrigin(API_BASE_URL);
 
+// The widget runs sandboxed in ChatGPT's iframe. CSP domains whitelist which
+// origins the widget can fetch from: connect for XHR/SSE, resource for scripts/images.
 const widgetConnectDomains: string[] = [];
 if (ASSETS_BASE_ORIGIN) {
   widgetConnectDomains.push(ASSETS_BASE_ORIGIN);
@@ -185,15 +191,16 @@ const answerGuidanceMarkdown = readMarkdownFile(
   "answer deck guidance",
 );
 
-// --- UI metadata for tools and resources ---
-
+// Every tool response includes this so ChatGPT knows which widget to render.
+// `resourceUri` points to the widget HTML registered as an MCP resource.
 const toolUiMeta = {
   ui: {
     resourceUri: TEMPLATE_URI,
   },
 };
 
-// --- Zod schemas for tool input ---
+// registerAppTool accepts Zod shapes (not JSON Schema objects).
+// The SDK converts these to JSON Schema for the model automatically.
 
 const cpuPersonaParser = z.object({
   id: z.string(),
@@ -288,6 +295,21 @@ const postBanterShape = {
 
 // --- Game logic helpers ---
 
+/**
+ * Builds a tool response with three data channels:
+ *
+ * 1. `_meta` — widget session binding. `openai/widgetSessionId` ties all tool
+ *    responses to the same widget instance. Without it, each tool call would
+ *    spawn a new widget iframe.
+ *
+ * 2. `content` — text that appears in the ChatGPT conversation. The JSON blob
+ *    uses `annotations.audience: ["assistant"]` to hide it from the user —
+ *    only the model sees it (game state, nextAction hints, cpuContext).
+ *
+ * 3. `structuredContent` — typed data channel for the widget. The widget reads
+ *    this via `callServerTool` responses and `ontoolresult`. The model does NOT
+ *    see structuredContent.
+ */
 function buildGameToolResponse(
   toolName: string,
   record: GameRecord,
@@ -301,8 +323,12 @@ function buildGameToolResponse(
   return {
     _meta: {
       ...toolUiMeta,
+      // Binds this response to the existing widget instance for this game.
       "openai/widgetSessionId": record.id,
     },
+    // Text content visible in the conversation. The assistant-only JSON blob
+    // gives the model game state and next-action hints without cluttering the
+    // user-visible chat.
     content: [
       ...(textContent ? [{ type: "text" as const, text: textContent }] : []),
       {
@@ -317,6 +343,7 @@ function buildGameToolResponse(
         annotations: { audience: ["assistant" as const] },
       },
     ],
+    // Widget-only data. The widget reads this; the model doesn't see it.
     structuredContent: {
       invocation: toolName,
       gameId: record.id,
@@ -387,16 +414,18 @@ function logToolCall(toolName: string, args: unknown, result: unknown) {
 
 // --- Server creation ---
 
+// Tool annotations hint to ChatGPT whether to show a confirmation dialog
+// before calling the tool. Setting readOnlyHint: true tells ChatGPT the tool
+// is safe to call without asking the user first.
 const toolAnnotations = {
-  // Game tools only mutate internal server state, not user data —
-  // marking as read-only tells ChatGPT to skip confirmation dialogs.
   readOnlyHint: true as const,
-  // These tools never delete or overwrite user data.
   destructiveHint: false as const,
-  // These tools don't interact with external services or publish content.
   openWorldHint: false as const,
 };
 
+// Creates a fresh McpServer per request (stateless pattern). Game state lives
+// in the `gamesById` map, not in the MCP session — so the server doesn't need
+// to track which client is connected.
 function createCardsAgainstAiServer(): McpServer {
   const server = new McpServer(
     {
@@ -413,6 +442,9 @@ function createCardsAgainstAiServer(): McpServer {
 
   // --- Register resources ---
 
+  // The widget HTML is served as an MCP resource so ChatGPT can fetch and
+  // render it in an iframe. CSP metadata tells the iframe which external
+  // domains to allow for network requests and script/image loading.
   registerAppResource(
     server,
     "Cards Against AI widget",
@@ -440,6 +472,9 @@ function createCardsAgainstAiServer(): McpServer {
     }),
   );
 
+  // `rules://` resources are context documents. ChatGPT reads these before
+  // the game starts to understand the rules and card creation guidelines.
+  // They aren't displayed in the UI — they inform the model's behavior.
   registerAppResource(
     server,
     "Cards Against AI rules",
@@ -479,6 +514,8 @@ function createCardsAgainstAiServer(): McpServer {
   );
 
   // --- Register tools ---
+  // Tools registered with `registerAppTool` automatically get MCP Apps
+  // metadata (widget binding, display hints) added to their responses.
 
   registerAppTool(
     server,
@@ -851,6 +888,9 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// MCP JSON-RPC endpoint. Each request gets a fresh server + transport.
+// `sessionIdGenerator: undefined` disables server-side sessions (stateless).
+// `enableJsonResponse: true` returns JSON instead of SSE streams.
 app.post("/mcp", async (req, res) => {
   const body = req.body;
   const method = Array.isArray(body) ? body.map((m: { method?: string }) => m.method).join(", ") : body?.method;
@@ -868,6 +908,8 @@ app.post("/mcp", async (req, res) => {
   await transport.handleRequest(req, res, req.body);
 });
 
+// Required by the MCP protocol for SSE-based transports. ChatGPT may use GET
+// for server-sent events during the MCP handshake.
 app.get("/mcp", async (req, res) => {
   const server = createCardsAgainstAiServer();
   const transport = new StreamableHTTPServerTransport({
@@ -881,11 +923,17 @@ app.get("/mcp", async (req, res) => {
   await transport.handleRequest(req, res);
 });
 
+// MCP protocol expects this endpoint. We return 405 because we're stateless
+// (no sessions to delete).
 app.delete("/mcp", async (_req, res) => {
   res.status(405).end();
 });
 
-// --- SSE: push game state to widget on every change ---
+// --- Custom SSE endpoint (separate from MCP) ---
+// The widget opens an EventSource here after learning the gameId.
+// GameInstance emits "change" on every state mutation, which pushes the
+// full game state to the widget in real-time. This is NOT part of the MCP
+// protocol — it's a custom endpoint for widget ↔ server real-time sync.
 
 app.get("/mcp/game/:gameId/state-stream", (req, res) => {
   const record = getGameRecord(req.params.gameId);

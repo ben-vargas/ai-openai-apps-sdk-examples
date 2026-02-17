@@ -299,7 +299,11 @@ export class GameInstance extends EventEmitter {
   }
 
   /**
-   * Get context for ChatGPT to make CPU decisions.
+   * Builds the data package sent to the model when it needs to make CPU
+   * decisions. Includes CPU player hands, the current prompt, already-played
+   * cards, and judge info — everything the model needs to play in-character.
+   * This is included in `structuredContent` and `content` (assistant-only)
+   * when `nextAction.notifyModel` is true.
    */
   getCpuContext() {
     const judge = this.state.players[this.state.currentJudgePlayerIndex] ?? null;
@@ -344,7 +348,12 @@ export class GameInstance extends EventEmitter {
   }
 
   /**
-   * Compute the next action hint for ChatGPT.
+   * The routing brain. Returns a NextActionHint that tells the widget and
+   * model what should happen next:
+   * - `notifyModel: true` → model needs to act (CPU plays, CPU judges).
+   *   The widget will sendMessage to prompt the model.
+   * - `notifyModel: false` → waiting for human input (play card, judge,
+   *   click "Next Round"). The widget just waits.
    */
   computeNextAction(): NextActionHint {
     const { status, players, currentJudgePlayerIndex, playedAnswerCards } = this.state;

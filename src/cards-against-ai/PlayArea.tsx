@@ -77,7 +77,18 @@ export function PlayArea(props: PlayAreaProps) {
 
   // --- Human action handlers ---
 
-  /** After a callServerTool, notify the model if nextAction.notifyModel is true. */
+  /**
+   * Hybrid pattern: callServerTool + conditional sendMessage.
+   *
+   * `callServerTool` bypasses the model — instant, no confirmation dialog.
+   * Used for human actions (play card, judge card) where the model doesn't
+   * need to decide anything.
+   *
+   * But sometimes the model needs to act next (e.g. CPU turns). The server
+   * signals this via `nextAction.notifyModel` in structuredContent. When true,
+   * we follow up with `sendMessage` to prompt the model to continue the
+   * game loop (e.g. call play-cpu-answer-cards).
+   */
   const callToolAndNotify = useCallback(
     async (
       toolName: string,
@@ -85,15 +96,23 @@ export function PlayArea(props: PlayAreaProps) {
       humanActionSummary: string,
     ) => {
       if (!app) return;
+      // callServerTool: calls the MCP server directly, bypassing the model.
+      // The result comes back instantly via the MCP Apps postMessage channel.
       const result = await app.callServerTool({
         name: toolName,
         arguments: args,
       });
+      // structuredContent is the typed data channel between widget and server.
+      // The model doesn't see it — only the widget reads it.
       const sc = result?.structuredContent as
         | { nextAction?: { notifyModel?: boolean; description?: string } | null; cpuContext?: unknown }
         | undefined;
 
       if (sc?.nextAction?.notifyModel) {
+        // sendMessage: sends a message into the ChatGPT conversation.
+        // The model reads it and decides what tool to call next.
+        // We include cpuContext so the model has all the info it needs
+        // to play CPU turns (hands, prompt, personas, etc.).
         const cpuContextStr = sc.cpuContext
           ? `\n\nCPU Context:\n${JSON.stringify(sc.cpuContext, null, 2)}`
           : "";
@@ -151,6 +170,9 @@ export function PlayArea(props: PlayAreaProps) {
     [app, gameId, callToolAndNotify],
   );
 
+  // submit-prompt requires the model's creativity (new prompt text + answer
+  // cards), so we use sendMessage instead of callServerTool. The model reads
+  // the message and calls submit-prompt with generated content.
   const nextRound = useCallback(async () => {
     if (pendingActionRef.current || !app || !gameId) return;
     pendingActionRef.current = true;

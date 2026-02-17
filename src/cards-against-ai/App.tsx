@@ -6,11 +6,20 @@ import { SplashScreen } from "./SplashScreen";
 import { getApiBaseUrl } from "./api-base-url";
 import type { GameState } from "./types";
 
+/**
+ * Wires up the two MCP Apps data channels:
+ * 1. `ontoolresult` — fires on every tool response. We use it once to grab the
+ *    gameId from `start-game`, which bootstraps the SSE connection.
+ * 2. SSE (`useStreamingGameState`) — server pushes the full gameState on every
+ *    change, so the widget stays in sync independent of its own actions.
+ */
 function useCardsAgainstAIGame() {
   const [gameId, setGameId] = useState<string | null>(null);
 
   const onAppCreated = useCallback((app: McpApp) => {
-    // ontoolresult: only used to extract gameId from start-game
+    // ontoolresult fires on every tool response the model makes.
+    // We only care about the first one (start-game) to extract the gameId.
+    // After that, SSE delivers all state updates.
     app.ontoolresult = (params) => {
       const sc = params.structuredContent as
         | { gameId?: string }
@@ -21,6 +30,9 @@ function useCardsAgainstAIGame() {
     };
   }, []);
 
+  // useApp() initializes the MCP Apps connection via postMessage/JSON-RPC.
+  // `appInfo` identifies this widget to the host (ChatGPT).
+  // `onAppCreated` runs once after the host handshake completes.
   const { app } = useApp({
     appInfo: { name: "cards-against-ai", version: "1.0.0" },
     capabilities: {},
@@ -32,10 +44,16 @@ function useCardsAgainstAIGame() {
   return { gameState, gameId, app } as const;
 }
 
+/**
+ * SSE is used instead of tool responses for ongoing state because state changes
+ * happen server-side (from other tool calls the model makes). The widget needs
+ * real-time updates independent of its own actions — e.g. when the model plays
+ * CPU answer cards, the widget must see the new state immediately.
+ */
 function useStreamingGameState(gameId: string | null) {
   const [gameState, setGameState] = useState<GameState | null>(null);
 
-  // SSE: open EventSource when gameId is set
+  // Open an EventSource to the server's custom SSE endpoint when gameId is set.
   useEffect(() => {
     if (!gameId) return;
 
@@ -92,6 +110,8 @@ export default function App() {
       <SplashScreen
         status={gameState?.status ?? "initializing"}
         onStart={() => {
+          // Request picture-in-picture mode so the widget stays visible
+          // while the user continues chatting with the model.
           app?.requestDisplayMode({ mode: "pip" });
           setPipStarted(true);
         }}
