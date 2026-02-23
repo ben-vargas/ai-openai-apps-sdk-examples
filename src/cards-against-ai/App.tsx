@@ -173,14 +173,32 @@ function useCardsAgainstAIGame() {
   );
 
   const nextRound = useCallback(async () => {
-    if (pendingActionRef.current || !app || !gameId) return;
+    if (pendingActionRef.current || !app || !gameId || !gameState) return;
     pendingActionRef.current = true;
     try {
+      // Build context so the model knows exactly what submit-prompt needs.
+      const judge = gameState.players[gameState.currentJudgePlayerIndex];
+      const playersWhoPlayed = gameState.playedAnswerCards
+        .map((p) => gameState.players.find((pl) => pl.id === p.playerId))
+        .filter((p): p is NonNullable<typeof p> => p != null);
+      const previousPrompts = gameState.discardedPromptCards.map((p) => p.text);
+
+      const contextLines = [
+        `The human clicked "Next Round". The game is in "${gameState.status}" state.`,
+        `Call the submit-prompt tool NOW for gameId="${gameId}".`,
+        "",
+        `Judge this round: ${judge?.persona?.name ?? judge?.id} (${judge?.id})`,
+        `Players who need a replacement answer card: ${playersWhoPlayed.map((p) => `${p.persona?.name ?? p.id} (${p.id})`).join(", ")}`,
+        ...(previousPrompts.length > 0
+          ? [`Previous prompts (do NOT repeat): ${previousPrompts.join("; ")}`]
+          : []),
+      ];
+
       await app.sendMessage({
         role: "user",
         content: [{
           type: "text",
-          text: `I'm ready for the next round. Call the submit-prompt tool for gameId="${gameId}" with a new prompt and replacement answer cards.`,
+          text: contextLines.join("\n"),
         }],
       });
     } catch (err) {
@@ -188,7 +206,7 @@ function useCardsAgainstAIGame() {
     } finally {
       pendingActionRef.current = false;
     }
-  }, [app, gameId]);
+  }, [app, gameId, gameState]);
 
   return {
     gameState, app,
