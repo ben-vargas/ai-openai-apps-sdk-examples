@@ -56,39 +56,29 @@ const ANSWER_GUIDANCE_PATH = path.resolve(
 
 dotenv.config({ path: path.resolve(ROOT_DIR, ".env.local") });
 
-const ASSETS_BASE_URL = normalizeBaseUrl(
-  process.env.ASSETS_BASE_URL ??
-    process.env.BASE_URL ??
+// Single BASE_URL — both assets and API are served from the same origin.
+const BASE_URL = normalizeBaseUrl(
+  process.env.BASE_URL ??
     process.env.VITE_BASE_URL ??
     "",
 );
-const ASSETS_BASE_ORIGIN = parseOrigin(ASSETS_BASE_URL);
-const API_BASE_URL = normalizeBaseUrl(
-  process.env.API_BASE_URL ??
-    process.env.VITE_API_BASE_URL ??
-    "http://localhost:8000",
-);
-const API_BASE_ORIGIN = parseOrigin(API_BASE_URL);
+const BASE_ORIGIN = parseOrigin(BASE_URL);
 
 // The widget runs sandboxed in ChatGPT's iframe. CSP domains whitelist which
 // origins the widget can fetch from: connect for XHR/SSE, resource for scripts/images.
-const widgetConnectDomains: string[] = [];
-if (ASSETS_BASE_ORIGIN) {
-  widgetConnectDomains.push(ASSETS_BASE_ORIGIN);
-}
-if (API_BASE_ORIGIN) {
-  widgetConnectDomains.push(API_BASE_ORIGIN);
-}
-
 const OPENAI_ASSETS_ORIGIN = "https://persistent.oaistatic.com";
-const widgetResourceDomains = ASSETS_BASE_ORIGIN
-  ? [ASSETS_BASE_ORIGIN, OPENAI_ASSETS_ORIGIN]
-  : [OPENAI_ASSETS_ORIGIN];
-const widgetCspDomains = buildWidgetCspDomains(
-  widgetConnectDomains,
-  widgetResourceDomains,
-  ASSETS_BASE_ORIGIN,
-);
+const widgetCspDomains = BASE_ORIGIN
+  ? {
+      connectDomains: [BASE_ORIGIN],
+      resourceDomains: [BASE_ORIGIN, OPENAI_ASSETS_ORIGIN],
+    }
+  : {
+      connectDomains: [] as string[],
+      resourceDomains: [OPENAI_ASSETS_ORIGIN],
+    };
+
+const portEnv = Number(process.env.PORT ?? 8000);
+const port = Number.isFinite(portEnv) ? portEnv : 8000;
 
 const gamesById = new Map<string, GameRecord>();
 
@@ -111,25 +101,6 @@ function parseOrigin(value: string | null): string | null {
   } catch {
     return null;
   }
-}
-
-function buildWidgetCspDomains(
-  connectDomains: string[],
-  resourceDomains: string[],
-  extraDomain: string | null,
-): { connectDomains: string[]; resourceDomains: string[] } {
-  const connect = new Set(connectDomains);
-  const resource = new Set(resourceDomains);
-
-  if (extraDomain) {
-    connect.add(extraDomain);
-    resource.add(extraDomain);
-  }
-
-  return {
-    connectDomains: [...connect],
-    resourceDomains: [...resource],
-  };
 }
 
 function readWidgetHtml(): string {
@@ -164,14 +135,10 @@ function readWidgetHtml(): string {
     );
   }
 
-  if (ASSETS_BASE_URL) {
-    return htmlContents.replaceAll(
-      "http://localhost:4444",
-      ASSETS_BASE_URL,
-    );
-  }
-
-  return htmlContents;
+  const effectiveBaseUrl = BASE_URL ?? `http://localhost:${port}`;
+  return htmlContents
+    .replaceAll("http://localhost:4444", effectiveBaseUrl)
+    .replaceAll("http://localhost:8000", effectiveBaseUrl);
 }
 
 function readMarkdownFile(filePath: string, label: string): string {
@@ -881,12 +848,10 @@ function createCardsAgainstAiServer(): McpServer {
 
 // --- HTTP server using Express + StreamableHTTP ---
 
-const portEnv = Number(process.env.PORT ?? 8000);
-const port = Number.isFinite(portEnv) ? portEnv : 8000;
-
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(express.static(ASSETS_DIR));
 
 // MCP JSON-RPC endpoint. Each request gets a fresh server + transport.
 // `sessionIdGenerator: undefined` disables server-side sessions (stateless).
@@ -977,5 +942,9 @@ app.listen(port, () => {
   console.log(
     `Cards Against AI MCP server listening on http://localhost:${port}`,
   );
-  console.log(`  Streamable HTTP endpoint: POST http://localhost:${port}/mcp`);
+  console.log(`  MCP endpoint: POST http://localhost:${port}/mcp`);
+  console.log(`  Static assets: http://localhost:${port}/ (from ${ASSETS_DIR})`);
+  if (BASE_URL) {
+    console.log(`  BASE_URL: ${BASE_URL}`);
+  }
 });

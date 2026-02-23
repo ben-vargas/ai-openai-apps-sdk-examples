@@ -1,18 +1,10 @@
-const DEFAULT_ASSETS_BASE_URL = "http://localhost:4444";
-const DEFAULT_API_BASE_URL = "http://localhost:8000";
+const DEFAULT_BASE_URL = "http://localhost:8000";
 
-const ENV_ASSETS_BASE_URL = normalizeBaseUrl(
+const ENV_BASE_URL = normalizeBaseUrl(
   typeof import.meta !== "undefined"
-    ? import.meta.env?.VITE_ASSETS_BASE_URL ?? import.meta.env?.VITE_BASE_URL
+    ? import.meta.env?.VITE_BASE_URL
     : "",
-  DEFAULT_ASSETS_BASE_URL,
-);
-
-const ENV_API_BASE_URL = normalizeBaseUrl(
-  typeof import.meta !== "undefined"
-    ? import.meta.env?.VITE_API_BASE_URL
-    : "",
-  DEFAULT_API_BASE_URL,
+  DEFAULT_BASE_URL,
 );
 
 declare global {
@@ -36,28 +28,26 @@ function normalizeBaseUrl(
   return trimmed.replace(/\/+$/, "") || fallback;
 }
 
-export function getAssetsBaseUrl(): string {
+function getBaseUrl(): string {
   if (typeof window === "undefined") {
-    return ENV_ASSETS_BASE_URL;
+    return ENV_BASE_URL;
   }
 
-  const windowOverride = window.__APP_URL_CONFIG__?.assetsBaseUrl;
+  // Check both config keys for backward compat
+  const windowOverride =
+    window.__APP_URL_CONFIG__?.apiBaseUrl ??
+    window.__APP_URL_CONFIG__?.assetsBaseUrl;
   if (windowOverride) {
-    return normalizeBaseUrl(windowOverride, DEFAULT_ASSETS_BASE_URL);
+    return normalizeBaseUrl(windowOverride, DEFAULT_BASE_URL);
   }
 
-  return ENV_ASSETS_BASE_URL;
+  return ENV_BASE_URL;
+}
+
+export function getAssetsBaseUrl(): string {
+  return getBaseUrl();
 }
 
 export function getApiBaseUrl(): string {
-  if (typeof window === "undefined") {
-    return ENV_API_BASE_URL;
-  }
-
-  const windowOverride = window.__APP_URL_CONFIG__?.apiBaseUrl;
-  if (windowOverride) {
-    return normalizeBaseUrl(windowOverride, DEFAULT_API_BASE_URL);
-  }
-
-  return ENV_API_BASE_URL;
+  return getBaseUrl();
 }

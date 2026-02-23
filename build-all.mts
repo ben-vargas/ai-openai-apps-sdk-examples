@@ -31,6 +31,13 @@ const targets: string[] = [
   "kitchen-sink-lite",
   "shopping-cart",
 ];
+const cliTargetIndex = process.argv.indexOf("--target");
+const cliTarget = cliTargetIndex !== -1 ? process.argv[cliTargetIndex + 1] : null;
+if (cliTarget) {
+  targets.length = 0;
+  targets.push(cliTarget);
+}
+
 const builtNames: string[] = [];
 
 function wrapEntryPlugin(
