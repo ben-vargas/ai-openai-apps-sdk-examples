@@ -64,18 +64,12 @@ const BASE_URL = normalizeBaseUrl(
 );
 const BASE_ORIGIN = parseOrigin(BASE_URL);
 
-// The widget runs sandboxed in ChatGPT's iframe. CSP domains whitelist which
-// origins the widget can fetch from: connect for XHR/SSE, resource for scripts/images.
-const OPENAI_ASSETS_ORIGIN = "https://persistent.oaistatic.com";
-const widgetCspDomains = BASE_ORIGIN
-  ? {
-      connectDomains: [BASE_ORIGIN],
-      resourceDomains: [BASE_ORIGIN, OPENAI_ASSETS_ORIGIN],
-    }
-  : {
-      connectDomains: [] as string[],
-      resourceDomains: [OPENAI_ASSETS_ORIGIN],
-    };
+// The widget is fully self-contained (JS/CSS/images inlined into HTML), so no
+// resourceDomains are needed. Only connectDomains for SSE game-state streaming.
+const widgetCspDomains = {
+  connectDomains: BASE_ORIGIN ? [BASE_ORIGIN] : ([] as string[]),
+  resourceDomains: [] as string[],
+};
 
 const portEnv = Number(process.env.PORT ?? 8000);
 const port = Number.isFinite(portEnv) ? portEnv : 8000;
@@ -103,42 +97,60 @@ function parseOrigin(value: string | null): string | null {
   }
 }
 
-function readWidgetHtml(): string {
+function findAssetFile(prefix: string, ext: string): string {
   if (!fs.existsSync(ASSETS_DIR)) {
     throw new Error(
       `Widget assets not found. Expected directory ${ASSETS_DIR}. Run "pnpm run build" before starting the server.`,
     );
   }
 
-  const directPath = path.join(ASSETS_DIR, "cards-against-ai.html");
-  let htmlContents: string | null = null;
+  // Try exact name first (e.g. "cards-against-ai.js")
+  const exact = path.join(ASSETS_DIR, `${prefix}${ext}`);
+  if (fs.existsSync(exact)) return exact;
 
-  if (fs.existsSync(directPath)) {
-    htmlContents = fs.readFileSync(directPath, "utf8");
-  } else {
-    const candidates = fs
-      .readdirSync(ASSETS_DIR)
-      .filter(
-        (file) =>
-          file.startsWith("cards-against-ai-") && file.endsWith(".html"),
-      )
-      .sort();
-    const fallback = candidates[candidates.length - 1];
-    if (fallback) {
-      htmlContents = fs.readFileSync(path.join(ASSETS_DIR, fallback), "utf8");
-    }
-  }
+  // Try hashed name (e.g. "cards-against-ai-2d2b.js")
+  const candidates = fs
+    .readdirSync(ASSETS_DIR)
+    .filter((f) => f.startsWith(`${prefix}-`) && f.endsWith(ext) && !f.endsWith(`.${ext}.map`))
+    .sort();
+  const match = candidates[candidates.length - 1];
+  if (match) return path.join(ASSETS_DIR, match);
 
-  if (!htmlContents) {
-    throw new Error(
-      `Widget HTML for "cards-against-ai" not found in ${ASSETS_DIR}. Run "pnpm run build" to generate the assets.`,
-    );
-  }
+  throw new Error(
+    `Asset file "${prefix}*${ext}" not found in ${ASSETS_DIR}. Run "pnpm run build" to generate assets.`,
+  );
+}
+
+function readWidgetHtml(): string {
+  const jsPath = findAssetFile("cards-against-ai", ".js");
+  const cssPath = findAssetFile("cards-against-ai", ".css");
+
+  const jsContent = fs.readFileSync(jsPath, "utf8");
+  const cssContent = fs.readFileSync(cssPath, "utf8");
 
   const effectiveBaseUrl = BASE_URL ?? `http://localhost:${port}`;
-  return htmlContents
-    .replaceAll("http://localhost:4444", effectiveBaseUrl)
-    .replaceAll("http://localhost:8000", effectiveBaseUrl);
+
+  // Build a fully self-contained HTML page with all JS/CSS/images inlined.
+  // This eliminates external asset loading from the ChatGPT iframe sandbox,
+  // avoiding CSP/URL mismatch issues entirely.
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>${cssContent}</style>
+  <script>
+    window.__APP_URL_CONFIG__ = ${JSON.stringify({
+      apiBaseUrl: effectiveBaseUrl,
+      assetsBaseUrl: effectiveBaseUrl,
+    })};
+  </script>
+</head>
+<body>
+  <div id="cards-against-ai-root"></div>
+  <script type="module">${jsContent}</script>
+</body>
+</html>`;
 }
 
 function readMarkdownFile(filePath: string, label: string): string {
@@ -287,14 +299,14 @@ function buildGameToolResponse(
     // gives the model game state and next-action hints without cluttering the
     // user-visible chat.
     content: [
-      ...(textContent ? [{ type: "text" as const, text: textContent }] : []),
+      { type: "text" as const, text: textContent || "Done." },
       {
         type: "text" as const,
         text: JSON.stringify({
           gameId: record.id,
           gameKey: record.key,
           gameState: record.instance.getState(),
-          nextAction,
+          ...(nextAction ? { nextAction } : {}),
           ...(cpuContext ? { cpuContext } : {}),
         }),
         annotations: { audience: ["assistant" as const] },
@@ -306,7 +318,7 @@ function buildGameToolResponse(
       gameId: record.id,
       gameKey: record.key,
       gameState: record.instance.getState(),
-      nextAction,
+      ...(nextAction ? { nextAction } : {}),
       ...(cpuContext ? { cpuContext } : {}),
     },
   };
@@ -879,6 +891,15 @@ app.get("/mcp/game/:gameId/state-stream", (req, res) => {
 
   req.on("close", () => {
     record.instance.removeListener("change", sendState);
+  });
+});
+
+app.get("/health", (_req, res) => {
+  res.json({
+    baseUrl: BASE_URL,
+    baseOrigin: BASE_ORIGIN,
+    csp: widgetCspDomains,
+    widgetHtmlLength: widgetHtml.length,
   });
 });
 

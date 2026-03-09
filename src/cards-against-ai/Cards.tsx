@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { getAssetsBaseUrl } from "./api-base-url";
-import cardBackPattern from "./assets/card-back-pattern.png";
+import cardBackPattern from "./assets/card-back-pattern.png?inline";
 
 /**
  * The width and height of a card in pixels.

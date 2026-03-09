@@ -1,4 +1,4 @@
-import cardBackPattern from "./assets/card-back-pattern.png";
+import cardBackPattern from "./assets/card-back-pattern.png?inline";
 import { getAssetsBaseUrl } from "./api-base-url";
 import type { GameStatus } from "./types";
 
