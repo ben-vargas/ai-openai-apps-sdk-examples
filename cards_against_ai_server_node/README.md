@@ -33,7 +33,7 @@ Single tunnel, single server.
 
 ## Key MCP Apps Concepts
 
-- **Tool response structure** — `buildGameToolResponse` shows the three data channels: `_meta` (widget binding), `content` (model-visible text), and `structuredContent` (widget-visible data).
+- **Tool response structure** — `buildGameToolResponse` shows the three data channels: `_meta.ui.resourceUri` (widget binding), `content` (model-visible text), and `structuredContent` (widget-visible data).
 - **Widget session binding** — `openai/widgetSessionId` ties all tool responses to the same widget iframe. Without it, each tool call spawns a new widget.
 - **Resource registration** — Widget HTML is served as an MCP resource so ChatGPT can render it. CSP metadata controls which domains the sandboxed iframe can access.
 - **Rules resources** — `rules://` URIs provide context documents the model reads before acting. They inform behavior, not UI.

@@ -27,7 +27,7 @@ Within the Apps SDK, MCP keeps the server, model, and UI in sync. By standardizi
 
 Because the protocol is transport agnostic, you can host the server over Server-Sent Events or streaming HTTP—Apps SDK supports both.
 
-The MCP servers in this demo highlight how each tool can light up widgets by combining structured payloads with `_meta.openai/outputTemplate` metadata returned from the MCP servers.
+The MCP servers in this demo highlight how each tool can light up widgets by combining structured payloads with `_meta.ui.resourceUri` metadata returned from the MCP servers.
 
 ## Repository structure
 
