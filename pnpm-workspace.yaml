@@ -2,6 +2,7 @@ packages:
   - pizzaz_server_node
   - kitchen_sink_server_node
   - cards_against_ai_server_node
+  - mcp_app_basics_node
 
 onlyBuiltDependencies:
   - '@modelcontextprotocol/ext-apps'
