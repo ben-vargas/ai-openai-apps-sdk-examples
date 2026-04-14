@@ -21,13 +21,14 @@ export type OpenAiGlobals<
   toolResponseMetadata: ToolResponseMetadata | null;
   widgetState: WidgetState | null;
   setWidgetState: (state: WidgetState) => Promise<void>;
+  view?: OpenAiView;
 };
 
 // currently copied from types.ts in chatgpt/web-sandbox.
 // Will eventually use a public package.
 type API = {
   callTool: CallTool;
-  sendFollowUpMessage: (args: { prompt: string }) => Promise<void>;
+  sendFollowUpMessage: (args: { prompt: string, scrollToBottom?: boolean }) => Promise<void>;
   openExternal(payload: { href: string }): void;
 
   // Layout controls
@@ -37,6 +38,11 @@ type API = {
 };
 
 export type UnknownObject = Record<string, unknown>;
+
+export interface OpenAiView {
+  mode?: string;
+  params?: UnknownObject;
+}
 
 export type Theme = "light" | "dark";
 
